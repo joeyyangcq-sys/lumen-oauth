@@ -1,0 +1,8 @@
+.DS_Store
+*.log
+coverage.out
+dist/
+bin/
+
+# local plan
+OAUTH_EXECUTION_PLAN.md
