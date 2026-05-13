@@ -1,0 +1,111 @@
+package bootstrap
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/joey/lumen-oauth/internal/application/auth"
+	"github.com/joey/lumen-oauth/internal/application/dcr"
+	inviteuc "github.com/joey/lumen-oauth/internal/application/invite"
+	"github.com/joey/lumen-oauth/internal/application/rbac"
+	"github.com/joey/lumen-oauth/internal/config"
+	"github.com/joey/lumen-oauth/internal/infrastructure/clock"
+	"github.com/joey/lumen-oauth/internal/infrastructure/idgen"
+	"github.com/joey/lumen-oauth/internal/infrastructure/jwt"
+	"github.com/joey/lumen-oauth/internal/infrastructure/sqlite"
+	"github.com/joey/lumen-oauth/internal/interfaces/http/routes"
+	"github.com/joey/lumen-oauth/internal/platform/logging"
+	"github.com/joey/lumen-oauth/internal/platform/observability"
+)
+
+type App struct {
+	Config       config.Config
+	Logger       *logging.Logger
+	Metrics      *observability.HTTPMetrics
+	Server       *http.Server
+	Repositories sqlite.Repositories
+}
+
+func New(cfg config.Config) (*App, error) {
+	log := logging.New(cfg.Logging.Level, cfg.Logging.Format)
+	metrics := observability.NewHTTPMetrics()
+	repos, err := sqlite.OpenAndInit(cfg.Storage.SQLitePath)
+	if err != nil {
+		return nil, err
+	}
+	authSvc := auth.Service{
+		Clients:  repos,
+		Roles:    repos,
+		Signer:   jwt.Signer{SigningKey: cfg.OAuth.SigningKey},
+		Clock:    clock.SystemClock{},
+		IDGen:    idgen.RandomID{},
+		Issuer:   cfg.OAuth.Issuer,
+		Audience: cfg.OAuth.Audience,
+		TTL:      maxDuration(cfg.OAuth.AccessTokenTTL, 15*time.Minute),
+	}
+	dcrSvc := dcr.Service{
+		Clients:             repos,
+		IDGen:               idgen.RandomID{},
+		IATRequired:         cfg.DCR.IATRequired,
+		InitialAccessTokens: cfg.DCR.InitialAccessTokens,
+	}
+	rbacSvc := rbac.Service{Roles: repos}
+	inviteSvc := inviteuc.Service{
+		Invites:   repos,
+		Roles:     repos,
+		IDGen:     idgen.RandomID{},
+		Clock:     clock.SystemClock{},
+		InviteTTL: cfg.Invite.TTL,
+	}
+
+	handler := routes.New(cfg, log, metrics, authSvc, dcrSvc, inviteSvc, rbacSvc)
+	return &App{
+		Config:       cfg,
+		Logger:       log,
+		Metrics:      metrics,
+		Repositories: repos,
+		Server: &http.Server{
+			Addr:         cfg.Server.HTTPListen,
+			Handler:      handler,
+			ReadTimeout:  cfg.Server.ReadTimeout,
+			WriteTimeout: cfg.Server.WriteTimeout,
+		},
+	}, nil
+}
+
+func (a *App) Run(ctx context.Context) error {
+	defer func() {
+		if err := a.Repositories.Close(); err != nil {
+			a.Logger.Error("close repositories failed", "error", err)
+		}
+	}()
+
+	errCh := make(chan error, 1)
+	go func() {
+		a.Logger.Info("oauth server starting", "listen", a.Config.Server.HTTPListen)
+		errCh <- a.Server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		a.Logger.Info("oauth server shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = a.Server.Shutdown(shutdownCtx)
+		return ctx.Err()
+	case err := <-errCh:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+func maxDuration(value, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
