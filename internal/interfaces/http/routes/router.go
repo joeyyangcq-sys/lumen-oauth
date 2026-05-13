@@ -46,6 +46,7 @@ func New(
 	mux.Handle("/debug/vars", expvar.Handler())
 
 	mws := []middleware.Middleware{
+		middleware.CORS,
 		middleware.RequestID,
 		middleware.Recovery(log),
 		middleware.AccessLog(log),
