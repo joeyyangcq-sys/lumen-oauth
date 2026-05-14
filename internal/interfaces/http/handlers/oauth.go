@@ -144,8 +144,13 @@ func (h AuthorizeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	sessionID := ""
+	if cookie, err := r.Cookie("lumen_session"); err == nil {
+		sessionID = cookie.Value
+	}
 	out, err := h.AuthService.Authorize(r.Context(), auth.AuthorizeCommand{
 		Bearer:              r.Header.Get("Authorization"),
+		SessionID:           sessionID,
 		ResponseType:        strings.TrimSpace(q.Get("response_type")),
 		ClientID:            strings.TrimSpace(q.Get("client_id")),
 		RedirectURI:         strings.TrimSpace(q.Get("redirect_uri")),
@@ -158,7 +163,14 @@ func (h AuthorizeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrUnauthorized):
-			writeOAuthError(w, http.StatusUnauthorized, "login_required", err.Error(), nil)
+			redirectToLogin(w, r)
+		case errors.Is(err, auth.ErrConsentRequired):
+			writeOAuthError(w, http.StatusForbidden, "consent_required", err.Error(), map[string]any{
+				"client_id":    q.Get("client_id"),
+				"redirect_uri": q.Get("redirect_uri"),
+				"resource":     q.Get("resource"),
+				"scope":        q.Get("scope"),
+			})
 		case errors.Is(err, auth.ErrNoScopeGranted):
 			writeOAuthError(w, http.StatusForbidden, "invalid_scope", err.Error(), nil)
 		default:
@@ -178,6 +190,89 @@ func (h AuthorizeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	redirectURL.RawQuery = values.Encode()
 	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+}
+
+func (h AuthorizeHandler) Consent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "failed to parse form", nil)
+		return
+	}
+	sessionID := ""
+	if cookie, err := r.Cookie("lumen_session"); err == nil {
+		sessionID = cookie.Value
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		writeOAuthError(w, http.StatusUnauthorized, "login_required", "missing session", nil)
+		return
+	}
+	if err := h.AuthService.ValidateCSRF(r.Context(), sessionID, r.Header.Get("X-CSRF-Token")); err != nil {
+		writeOAuthError(w, http.StatusForbidden, "csrf_required", "invalid csrf token", nil)
+		return
+	}
+	if err := h.AuthService.Consent(r.Context(), auth.AuthorizeCommand{
+		SessionID:   sessionID,
+		ClientID:    strings.TrimSpace(r.FormValue("client_id")),
+		RedirectURI: strings.TrimSpace(r.FormValue("redirect_uri")),
+		Scope:       strings.Fields(r.FormValue("scope")),
+		Resource:    strings.TrimSpace(r.FormValue("resource")),
+	}); err != nil {
+		switch {
+		case errors.Is(err, auth.ErrUnauthorized):
+			writeOAuthError(w, http.StatusUnauthorized, "login_required", err.Error(), nil)
+		case errors.Is(err, auth.ErrNoScopeGranted):
+			writeOAuthError(w, http.StatusForbidden, "invalid_scope", err.Error(), nil)
+		default:
+			writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (h AuthorizeHandler) ConsentRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required", nil)
+		return
+	}
+	q := r.URL.Query()
+	sessionID := ""
+	if cookie, err := r.Cookie("lumen_session"); err == nil {
+		sessionID = cookie.Value
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		writeOAuthError(w, http.StatusUnauthorized, "login_required", "missing session", nil)
+		return
+	}
+	out, err := h.AuthService.ConsentRequest(r.Context(), auth.AuthorizeCommand{
+		SessionID:   sessionID,
+		ClientID:    strings.TrimSpace(q.Get("client_id")),
+		RedirectURI: strings.TrimSpace(q.Get("redirect_uri")),
+		Scope:       strings.Fields(q.Get("scope")),
+		Resource:    strings.TrimSpace(q.Get("resource")),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrUnauthorized):
+			writeOAuthError(w, http.StatusUnauthorized, "login_required", err.Error(), nil)
+		case errors.Is(err, auth.ErrNoScopeGranted):
+			writeOAuthError(w, http.StatusForbidden, "invalid_scope", err.Error(), nil)
+		default:
+			writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func redirectToLogin(w http.ResponseWriter, r *http.Request) {
+	loginURL := "/login?return_to=" + url.QueryEscape(r.URL.RequestURI())
+	http.Redirect(w, r, loginURL, http.StatusFound)
 }
 
 func parseScopeParam(raw string) []string {

@@ -57,6 +57,7 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 		AuthCodes: repos,
 		Grants:    repos,
 		Refreshes: repos,
+		Sessions:  repos,
 		Roles:     repos,
 		Signer:    jwt.Signer{SigningKey: cfg.OAuth.SigningKey},
 		Verifier:  jwt.Verifier{SigningKey: cfg.OAuth.SigningKey},
@@ -87,6 +88,7 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 	}
 	var loginBody struct {
 		AccessToken string `json:"access_token"`
+		CSRFToken   string `json:"csrf_token"`
 		User        struct {
 			IsAdmin bool `json:"is_admin"`
 		} `json:"user"`
@@ -94,8 +96,18 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginBody); err != nil {
 		t.Fatalf("decode login response: %v", err)
 	}
-	if loginBody.AccessToken == "" || !loginBody.User.IsAdmin {
+	if loginBody.AccessToken == "" || loginBody.CSRFToken == "" || !loginBody.User.IsAdmin {
 		t.Fatalf("unexpected login response: %+v", loginBody)
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range loginRec.Result().Cookies() {
+		if cookie.Name == "lumen_session" {
+			sessionCookie = cookie
+			break
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" || !sessionCookie.HttpOnly {
+		t.Fatalf("missing HttpOnly lumen_session cookie: %#v", loginRec.Result().Cookies())
 	}
 
 	meReq := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
@@ -137,8 +149,66 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 		"&state=state-1&code_challenge=" + url.QueryEscape(challenge) +
 		"&code_challenge_method=S256&resource=" + url.QueryEscape("https://mcp.example.com/mcp")
 	authReq := httptest.NewRequest(http.MethodGet, authURL, nil)
-	authReq.Header.Set("Authorization", "Bearer "+loginBody.AccessToken)
+	authReq.AddCookie(sessionCookie)
 	authRec := httptest.NewRecorder()
+	h.ServeHTTP(authRec, authReq)
+	if authRec.Code != http.StatusForbidden {
+		t.Fatalf("authorize before consent status=%d want 403 body=%s", authRec.Code, authRec.Body.String())
+	}
+
+	consentRequestURL := "/oauth/consent/request?client_id=mcp-client&redirect_uri=" +
+		url.QueryEscape("http://localhost:3118/callback") +
+		"&scope=" + url.QueryEscape("mcp:tools offline_access") +
+		"&resource=" + url.QueryEscape("https://mcp.example.com/mcp")
+	consentViewReq := httptest.NewRequest(http.MethodGet, consentRequestURL, nil)
+	consentViewReq.AddCookie(sessionCookie)
+	consentViewRec := httptest.NewRecorder()
+	h.ServeHTTP(consentViewRec, consentViewReq)
+	if consentViewRec.Code != http.StatusOK {
+		t.Fatalf("consent request status=%d body=%s", consentViewRec.Code, consentViewRec.Body.String())
+	}
+	var consentView struct {
+		ClientID        string `json:"client_id"`
+		RedirectHost    string `json:"redirect_host"`
+		ConsentRequired bool   `json:"consent_required"`
+		Scopes          []struct {
+			Value string `json:"value"`
+		} `json:"scopes"`
+	}
+	if err := json.Unmarshal(consentViewRec.Body.Bytes(), &consentView); err != nil {
+		t.Fatalf("decode consent request: %v", err)
+	}
+	if consentView.ClientID != "mcp-client" || consentView.RedirectHost != "localhost:3118" || !consentView.ConsentRequired || len(consentView.Scopes) != 2 {
+		t.Fatalf("unexpected consent request: %+v", consentView)
+	}
+
+	consentForm := url.Values{}
+	consentForm.Set("client_id", "mcp-client")
+	consentForm.Set("redirect_uri", "http://localhost:3118/callback")
+	consentForm.Set("scope", "mcp:tools offline_access")
+	consentForm.Set("resource", "https://mcp.example.com/mcp")
+	missingCSRFReq := httptest.NewRequest(http.MethodPost, "/oauth/consent", strings.NewReader(consentForm.Encode()))
+	missingCSRFReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	missingCSRFReq.AddCookie(sessionCookie)
+	missingCSRFRec := httptest.NewRecorder()
+	h.ServeHTTP(missingCSRFRec, missingCSRFReq)
+	if missingCSRFRec.Code != http.StatusForbidden {
+		t.Fatalf("consent without csrf status=%d want 403 body=%s", missingCSRFRec.Code, missingCSRFRec.Body.String())
+	}
+
+	consentReq := httptest.NewRequest(http.MethodPost, "/oauth/consent", strings.NewReader(consentForm.Encode()))
+	consentReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	consentReq.AddCookie(sessionCookie)
+	consentReq.Header.Set("X-CSRF-Token", loginBody.CSRFToken)
+	consentRec := httptest.NewRecorder()
+	h.ServeHTTP(consentRec, consentReq)
+	if consentRec.Code != http.StatusOK {
+		t.Fatalf("consent status=%d body=%s", consentRec.Code, consentRec.Body.String())
+	}
+
+	authReq = httptest.NewRequest(http.MethodGet, authURL, nil)
+	authReq.AddCookie(sessionCookie)
+	authRec = httptest.NewRecorder()
 	h.ServeHTTP(authRec, authReq)
 	if authRec.Code != http.StatusFound {
 		t.Fatalf("authorize status=%d body=%s", authRec.Code, authRec.Body.String())
@@ -208,6 +278,26 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 	h.ServeHTTP(reuseRec, reuseReq)
 	if reuseRec.Code != http.StatusUnauthorized {
 		t.Fatalf("reuse status=%d want 401 body=%s", reuseRec.Code, reuseRec.Body.String())
+	}
+
+	badLogoutReq := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	badLogoutReq.AddCookie(sessionCookie)
+	badLogoutRec := httptest.NewRecorder()
+	h.ServeHTTP(badLogoutRec, badLogoutReq)
+	if badLogoutRec.Code != http.StatusForbidden {
+		t.Fatalf("logout without csrf status=%d want 403 body=%s", badLogoutRec.Code, badLogoutRec.Body.String())
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	logoutReq.AddCookie(sessionCookie)
+	logoutReq.Header.Set("X-CSRF-Token", loginBody.CSRFToken)
+	logoutRec := httptest.NewRecorder()
+	h.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status=%d body=%s", logoutRec.Code, logoutRec.Body.String())
+	}
+	if logoutRec.Header().Get("Content-Security-Policy") == "" || logoutRec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("missing security headers: %#v", logoutRec.Header())
 	}
 }
 

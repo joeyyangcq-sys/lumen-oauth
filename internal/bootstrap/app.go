@@ -44,6 +44,7 @@ func New(cfg config.Config) (*App, error) {
 		AuthCodes:  repos,
 		Grants:     repos,
 		Refreshes:  repos,
+		Sessions:   repos,
 		Roles:      repos,
 		Signer:     jwt.Signer{SigningKey: cfg.OAuth.SigningKey},
 		Verifier:   jwt.Verifier{SigningKey: cfg.OAuth.SigningKey},
@@ -55,6 +56,7 @@ func New(cfg config.Config) (*App, error) {
 		TTL:        maxDuration(cfg.OAuth.AccessTokenTTL, 15*time.Minute),
 		CodeTTL:    maxDuration(cfg.OAuth.AuthorizationCodeTTL, 5*time.Minute),
 		RefreshTTL: maxDuration(cfg.OAuth.RefreshTokenTTL, 30*24*time.Hour),
+		SessionTTL: 12 * time.Hour,
 	}
 	if err := authSvc.EnsureBootstrapAdmin(context.Background(), auth.BootstrapAdminCommand{
 		Enabled:             cfg.BootstrapAdmin.Enabled,

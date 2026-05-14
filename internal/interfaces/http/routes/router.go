@@ -43,9 +43,12 @@ func New(
 	mux.HandleFunc("/oauth/jwks.json", o.JWKS)
 	mux.HandleFunc("/oauth/token", tokenHandler.Token)
 	mux.HandleFunc("/oauth/authorize", authorizeHandler.Authorize)
+	mux.HandleFunc("/oauth/consent", authorizeHandler.Consent)
+	mux.HandleFunc("/oauth/consent/request", authorizeHandler.ConsentRequest)
 	mux.HandleFunc("/oauth/register", dcrHandler.RegisterClient)
 	mux.HandleFunc("/connect/register", dcrHandler.RegisterClient)
 	mux.HandleFunc("/auth/login", authHandler.Login)
+	mux.HandleFunc("/auth/logout", authHandler.Logout)
 	mux.HandleFunc("/auth/me", authHandler.Me)
 	mux.HandleFunc("/auth/invitations", inviteHandler.CreateInvitation)
 	mux.HandleFunc("/auth/register/accept", inviteHandler.AcceptInvitation)
@@ -54,6 +57,7 @@ func New(
 	mux.Handle("/debug/vars", expvar.Handler())
 
 	mws := []middleware.Middleware{
+		middleware.SecurityHeaders,
 		middleware.CORS,
 		middleware.RequestID,
 		middleware.Recovery(log),

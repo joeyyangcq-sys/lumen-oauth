@@ -10,6 +10,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/domain/invite"
 	"github.com/joey/lumen-oauth/internal/domain/refreshtoken"
 	"github.com/joey/lumen-oauth/internal/domain/role"
+	"github.com/joey/lumen-oauth/internal/domain/session"
 	"github.com/joey/lumen-oauth/internal/domain/token"
 	"github.com/joey/lumen-oauth/internal/domain/user"
 )
@@ -71,6 +72,12 @@ type RefreshTokenRepository interface {
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (refreshtoken.RefreshToken, error)
 	RotateRefreshToken(ctx context.Context, oldHash string, next refreshtoken.RefreshToken, usedAt time.Time) error
 	RevokeRefreshTokensByGrant(ctx context.Context, grantID string, revokedAt time.Time) error
+}
+
+type SessionRepository interface {
+	SaveSession(ctx context.Context, session session.Session) error
+	GetSessionByID(ctx context.Context, id string) (session.Session, error)
+	RevokeSession(ctx context.Context, id string, revokedAt time.Time) error
 }
 
 type RoleRepository interface {

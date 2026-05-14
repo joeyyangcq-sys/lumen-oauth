@@ -20,6 +20,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/domain/invite"
 	"github.com/joey/lumen-oauth/internal/domain/refreshtoken"
 	"github.com/joey/lumen-oauth/internal/domain/role"
+	"github.com/joey/lumen-oauth/internal/domain/session"
 	"github.com/joey/lumen-oauth/internal/domain/user"
 )
 
@@ -128,6 +129,14 @@ func (r Repositories) initSchema(ctx context.Context) error {
 			replaced_by_id TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS auth_sessions (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			csrf_token_hash TEXT NOT NULL DEFAULT '',
+			expires_at TIMESTAMP NOT NULL,
+			revoked_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
 		`CREATE TABLE IF NOT EXISTS subject_roles (
 			subject TEXT NOT NULL,
 			role_name TEXT NOT NULL,
@@ -163,7 +172,10 @@ func (r Repositories) initSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	return r.ensureOAuthClientColumns(ctx)
+	if err := r.ensureOAuthClientColumns(ctx); err != nil {
+		return err
+	}
+	return r.ensureAuthSessionColumns(ctx)
 }
 
 func (r Repositories) ensureOAuthClientColumns(ctx context.Context) error {
@@ -179,6 +191,25 @@ func (r Repositories) ensureOAuthClientColumns(ctx context.Context) error {
 		"client_id_issued_at":        "ALTER TABLE oauth_clients ADD COLUMN client_id_issued_at INTEGER NOT NULL DEFAULT 0",
 		"client_secret_expires_at":   "ALTER TABLE oauth_clients ADD COLUMN client_secret_expires_at INTEGER NOT NULL DEFAULT 0",
 		"blocked_at":                 "ALTER TABLE oauth_clients ADD COLUMN blocked_at TIMESTAMP NULL",
+	}
+	for name, stmt := range columns {
+		if existing[name] {
+			continue
+		}
+		if _, err := r.DB.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r Repositories) ensureAuthSessionColumns(ctx context.Context) error {
+	existing, err := r.tableColumns(ctx, "auth_sessions")
+	if err != nil {
+		return err
+	}
+	columns := map[string]string{
+		"csrf_token_hash": "ALTER TABLE auth_sessions ADD COLUMN csrf_token_hash TEXT NOT NULL DEFAULT ''",
 	}
 	for name, stmt := range columns {
 		if existing[name] {
@@ -683,6 +714,46 @@ func (r Repositories) RevokeRefreshTokensByGrant(ctx context.Context, grantID st
 		revokedAt.UTC(),
 		grantID,
 	)
+	return err
+}
+
+func (r Repositories) SaveSession(ctx context.Context, session session.Session) error {
+	_, err := r.DB.ExecContext(ctx, `
+		INSERT INTO auth_sessions (id, user_id, csrf_token_hash, expires_at, revoked_at)
+		VALUES (?, ?, ?, ?, NULL)`,
+		session.ID,
+		session.UserID,
+		session.CSRFTokenHash,
+		session.ExpiresAt.UTC(),
+	)
+	return err
+}
+
+func (r Repositories) GetSessionByID(ctx context.Context, id string) (session.Session, error) {
+	row := r.DB.QueryRowContext(ctx, `
+		SELECT id, user_id, csrf_token_hash, expires_at, revoked_at, created_at
+		FROM auth_sessions
+		WHERE id = ?`, id)
+	var (
+		out       session.Session
+		expiresAt time.Time
+		revokedAt sql.NullTime
+		createdAt time.Time
+	)
+	if err := row.Scan(&out.ID, &out.UserID, &out.CSRFTokenHash, &expiresAt, &revokedAt, &createdAt); err != nil {
+		return session.Session{}, err
+	}
+	out.ExpiresAt = expiresAt.UTC()
+	out.CreatedAt = createdAt.UTC()
+	if revokedAt.Valid {
+		t := revokedAt.Time.UTC()
+		out.RevokedAt = &t
+	}
+	return out, nil
+}
+
+func (r Repositories) RevokeSession(ctx context.Context, id string, revokedAt time.Time) error {
+	_, err := r.DB.ExecContext(ctx, `UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, revokedAt.UTC(), id)
 	return err
 }
 

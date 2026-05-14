@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -15,7 +16,9 @@ import (
 	"github.com/joey/lumen-oauth/internal/domain/authcode"
 	"github.com/joey/lumen-oauth/internal/domain/grant"
 	"github.com/joey/lumen-oauth/internal/domain/refreshtoken"
+	"github.com/joey/lumen-oauth/internal/domain/session"
 	"github.com/joey/lumen-oauth/internal/domain/token"
+	"github.com/joey/lumen-oauth/internal/domain/user"
 )
 
 var (
@@ -31,6 +34,7 @@ var (
 	ErrPKCEVerificationFailed   = errors.New("pkce verification failed")
 	ErrInvalidRefreshToken      = errors.New("invalid refresh token")
 	ErrRefreshTokenReuse        = errors.New("refresh token reuse detected")
+	ErrConsentRequired          = errors.New("consent required")
 )
 
 type Service struct {
@@ -39,6 +43,7 @@ type Service struct {
 	AuthCodes  ports.AuthorizationCodeRepository
 	Grants     ports.GrantRepository
 	Refreshes  ports.RefreshTokenRepository
+	Sessions   ports.SessionRepository
 	Signer     ports.TokenSigner
 	Verifier   ports.TokenVerifier
 	Passwords  ports.PasswordHasher
@@ -51,11 +56,15 @@ type Service struct {
 	TTL        time.Duration
 	CodeTTL    time.Duration
 	RefreshTTL time.Duration
+	SessionTTL time.Duration
 }
 
 type LoginResult struct {
-	AccessToken token.AccessToken
-	User        UserSession
+	AccessToken      token.AccessToken
+	SessionID        string
+	CSRFToken        string
+	SessionExpiresAt time.Time
+	User             UserSession
 }
 
 type UserSession struct {
@@ -69,6 +78,7 @@ type UserSession struct {
 
 type AuthorizeCommand struct {
 	Bearer              string
+	SessionID           string
 	ResponseType        string
 	ClientID            string
 	RedirectURI         string
@@ -83,6 +93,25 @@ type AuthorizeResult struct {
 	Code        string
 	State       string
 	RedirectURI string
+}
+
+type ConsentRequestModel struct {
+	ClientID        string              `json:"client_id"`
+	ClientName      string              `json:"client_name"`
+	TrustLevel      string              `json:"trust_level"`
+	RedirectURI     string              `json:"redirect_uri"`
+	RedirectHost    string              `json:"redirect_host"`
+	Resource        string              `json:"resource"`
+	Scopes          []ConsentScopeModel `json:"scopes"`
+	Warnings        []string            `json:"warnings"`
+	ConsentRequired bool                `json:"consent_required"`
+}
+
+type ConsentScopeModel struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Risk        string `json:"risk"`
 }
 
 type AuthorizationCodeTokenCommand struct {
@@ -126,6 +155,30 @@ func (s Service) Login(ctx context.Context, email, password string) (LoginResult
 	}
 	now := s.now()
 	_ = s.Users.UpdateUserLastLogin(ctx, u.ID, now)
+	sessionID := ""
+	csrfToken := ""
+	sessionExpiresAt := time.Time{}
+	if s.Sessions != nil {
+		sessionID = "sess-local-dev"
+		csrfToken = "csrf-local-dev"
+		if s.IDGen != nil {
+			sessionID = "sess-" + s.IDGen.New()
+			csrfToken = "csrf-" + s.IDGen.New()
+		}
+		sessionTTL := s.SessionTTL
+		if sessionTTL <= 0 {
+			sessionTTL = 12 * time.Hour
+		}
+		sessionExpiresAt = now.Add(sessionTTL)
+		if err := s.Sessions.SaveSession(ctx, session.Session{
+			ID:            sessionID,
+			UserID:        u.ID,
+			CSRFTokenHash: hashOpaque(csrfToken),
+			ExpiresAt:     sessionExpiresAt,
+		}); err != nil {
+			return LoginResult{}, err
+		}
+	}
 	scopes := userLoginScopes(u.IsAdmin)
 	jti := ""
 	if s.IDGen != nil {
@@ -144,8 +197,11 @@ func (s Service) Login(ctx context.Context, email, password string) (LoginResult
 		return LoginResult{}, err
 	}
 	return LoginResult{
-		AccessToken: issued,
-		User:        userSession(u.ID, u.Email, u.Name, u.IsAdmin, u.ForceChangePassword, scopes),
+		AccessToken:      issued,
+		SessionID:        sessionID,
+		CSRFToken:        csrfToken,
+		SessionExpiresAt: sessionExpiresAt,
+		User:             userSession(u.ID, u.Email, u.Name, u.IsAdmin, u.ForceChangePassword, scopes),
 	}, nil
 }
 
@@ -164,18 +220,61 @@ func (s Service) Me(ctx context.Context, bearer string) (UserSession, error) {
 	return userSession(u.ID, u.Email, u.Name, u.IsAdmin, u.ForceChangePassword, claims.Scopes), nil
 }
 
+func (s Service) authorizeUser(ctx context.Context, cmd AuthorizeCommand) (user.User, error) {
+	if strings.TrimSpace(cmd.SessionID) != "" && s.Sessions != nil {
+		sess, err := s.Sessions.GetSessionByID(ctx, cmd.SessionID)
+		if err == nil && sess.RevokedAt == nil && s.now().Before(sess.ExpiresAt) {
+			return s.Users.GetUserByID(ctx, sess.UserID)
+		}
+	}
+	if strings.TrimSpace(cmd.Bearer) == "" || s.Verifier == nil {
+		return user.User{}, ErrUnauthorized
+	}
+	claims, err := s.Verifier.VerifyAccessToken(ctx, cmd.Bearer)
+	if err != nil {
+		return user.User{}, ErrUnauthorized
+	}
+	return s.Users.GetUserByID(ctx, claims.Subject)
+}
+
+func (s Service) ValidateCSRF(ctx context.Context, sessionID, csrfToken string) error {
+	if s.Sessions == nil {
+		return ErrUnauthorized
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	csrfToken = strings.TrimSpace(csrfToken)
+	if sessionID == "" || csrfToken == "" {
+		return ErrUnauthorized
+	}
+	sess, err := s.Sessions.GetSessionByID(ctx, sessionID)
+	if err != nil || sess.RevokedAt != nil || !s.now().Before(sess.ExpiresAt) {
+		return ErrUnauthorized
+	}
+	if subtle.ConstantTimeCompare([]byte(sess.CSRFTokenHash), []byte(hashOpaque(csrfToken))) != 1 {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
+func (s Service) RevokeSession(ctx context.Context, sessionID string) error {
+	if s.Sessions == nil {
+		return ErrUnauthorized
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ErrUnauthorized
+	}
+	return s.Sessions.RevokeSession(ctx, sessionID, s.now())
+}
+
 func (s Service) Authorize(ctx context.Context, cmd AuthorizeCommand) (AuthorizeResult, error) {
-	if s.Clients == nil || s.Users == nil || s.Verifier == nil || s.AuthCodes == nil || s.Grants == nil {
+	if s.Clients == nil || s.Users == nil || s.AuthCodes == nil || s.Grants == nil {
 		return AuthorizeResult{}, ErrInvalidAuthorizeRequest
 	}
 	if cmd.ResponseType != "code" || cmd.CodeChallengeMethod != "S256" || strings.TrimSpace(cmd.CodeChallenge) == "" {
 		return AuthorizeResult{}, ErrInvalidAuthorizeRequest
 	}
-	claims, err := s.Verifier.VerifyAccessToken(ctx, cmd.Bearer)
-	if err != nil {
-		return AuthorizeResult{}, ErrUnauthorized
-	}
-	u, err := s.Users.GetUserByID(ctx, claims.Subject)
+	u, err := s.authorizeUser(ctx, cmd)
 	if err != nil || u.Disabled {
 		return AuthorizeResult{}, ErrUnauthorized
 	}
@@ -200,23 +299,22 @@ func (s Service) Authorize(ctx context.Context, cmd AuthorizeCommand) (Authorize
 	if len(scopes) == 0 {
 		return AuthorizeResult{}, ErrNoScopeGranted
 	}
+	if existingGrant, err := s.Grants.GetActiveGrant(ctx, u.ID, c.ID, resource); err == nil {
+		allowedScopes := grantScopes(scopes, existingGrant.Scopes)
+		if len(allowedScopes) == len(scopes) {
+			scopes = allowedScopes
+		} else {
+			return AuthorizeResult{}, ErrConsentRequired
+		}
+	} else {
+		return AuthorizeResult{}, ErrConsentRequired
+	}
 	now := s.now()
 	rawCode := "code-local-dev"
 	codeID := "ac-local-dev"
-	grantID := "grant-local-dev"
 	if s.IDGen != nil {
 		rawCode = "code-" + s.IDGen.New()
 		codeID = "ac-" + s.IDGen.New()
-		grantID = "grant-" + s.IDGen.New()
-	}
-	if err := s.Grants.UpsertGrant(ctx, grant.Grant{
-		ID:       grantID,
-		UserID:   u.ID,
-		ClientID: c.ID,
-		Resource: resource,
-		Scopes:   scopes,
-	}); err != nil {
-		return AuthorizeResult{}, err
 	}
 	codeTTL := s.CodeTTL
 	if codeTTL <= 0 {
@@ -237,6 +335,136 @@ func (s Service) Authorize(ctx context.Context, cmd AuthorizeCommand) (Authorize
 		return AuthorizeResult{}, err
 	}
 	return AuthorizeResult{Code: rawCode, State: cmd.State, RedirectURI: cmd.RedirectURI}, nil
+}
+
+func (s Service) ConsentRequest(ctx context.Context, cmd AuthorizeCommand) (ConsentRequestModel, error) {
+	if s.Clients == nil || s.Users == nil || s.Grants == nil {
+		return ConsentRequestModel{}, ErrInvalidAuthorizeRequest
+	}
+	u, err := s.authorizeUser(ctx, cmd)
+	if err != nil || u.Disabled {
+		return ConsentRequestModel{}, ErrUnauthorized
+	}
+	c, err := s.Clients.GetByID(ctx, cmd.ClientID)
+	if err != nil || c.Disabled || c.TrustLevel == "blocked" {
+		return ConsentRequestModel{}, ErrInvalidAuthorizeRequest
+	}
+	if !contains(c.RedirectURIs, cmd.RedirectURI) {
+		return ConsentRequestModel{}, ErrInvalidAuthorizeRequest
+	}
+	resource := strings.TrimSpace(cmd.Resource)
+	if resource == "" && len(s.Audience) > 0 {
+		resource = s.Audience[0]
+	}
+	if resource == "" || !contains(s.Audience, resource) {
+		return ConsentRequestModel{}, ErrInvalidAuthorizeRequest
+	}
+	scopes := grantScopes(cmd.Scope, c.Scopes)
+	if len(scopes) == 0 {
+		return ConsentRequestModel{}, ErrNoScopeGranted
+	}
+
+	model := ConsentRequestModel{
+		ClientID:    c.ID,
+		ClientName:  c.Name,
+		TrustLevel:  c.TrustLevel,
+		RedirectURI: cmd.RedirectURI,
+		Resource:    resource,
+		Scopes:      consentScopeModels(scopes),
+		Warnings:    consentWarnings(c.TrustLevel, cmd.RedirectURI),
+	}
+	if parsed, err := url.Parse(cmd.RedirectURI); err == nil {
+		model.RedirectHost = parsed.Host
+		if parsed.Host == "" {
+			model.RedirectHost = parsed.Scheme
+		}
+	}
+	if existingGrant, err := s.Grants.GetActiveGrant(ctx, u.ID, c.ID, resource); err == nil {
+		allowedScopes := grantScopes(scopes, existingGrant.Scopes)
+		model.ConsentRequired = len(allowedScopes) != len(scopes)
+	} else {
+		model.ConsentRequired = true
+	}
+	return model, nil
+}
+
+func (s Service) Consent(ctx context.Context, cmd AuthorizeCommand) error {
+	if s.Clients == nil || s.Users == nil || s.Grants == nil {
+		return ErrInvalidAuthorizeRequest
+	}
+	u, err := s.authorizeUser(ctx, cmd)
+	if err != nil || u.Disabled {
+		return ErrUnauthorized
+	}
+	c, err := s.Clients.GetByID(ctx, cmd.ClientID)
+	if err != nil || c.Disabled || c.TrustLevel == "blocked" {
+		return ErrInvalidAuthorizeRequest
+	}
+	if !contains(c.RedirectURIs, cmd.RedirectURI) {
+		return ErrInvalidAuthorizeRequest
+	}
+	resource := strings.TrimSpace(cmd.Resource)
+	if resource == "" && len(s.Audience) > 0 {
+		resource = s.Audience[0]
+	}
+	if resource == "" || !contains(s.Audience, resource) {
+		return ErrInvalidAuthorizeRequest
+	}
+	scopes := grantScopes(cmd.Scope, c.Scopes)
+	if len(scopes) == 0 {
+		return ErrNoScopeGranted
+	}
+	grantID := "grant-local-dev"
+	if s.IDGen != nil {
+		grantID = "grant-" + s.IDGen.New()
+	}
+	return s.Grants.UpsertGrant(ctx, grant.Grant{
+		ID:       grantID,
+		UserID:   u.ID,
+		ClientID: c.ID,
+		Resource: resource,
+		Scopes:   scopes,
+	})
+}
+
+func consentScopeModels(scopes []string) []ConsentScopeModel {
+	out := make([]ConsentScopeModel, 0, len(scopes))
+	for _, scope := range normalizeScopes(scopes) {
+		model := ConsentScopeModel{Value: scope, Label: scope, Risk: "normal"}
+		switch scope {
+		case "mcp:tools":
+			model.Label = "调用 MCP tools"
+			model.Description = "允许客户端发现并调用已授权的 MCP tools。"
+			model.Risk = "medium"
+		case "mcp:read":
+			model.Label = "读取 MCP 数据"
+			model.Description = "允许读取 MCP 资源和工具结果。"
+		case "mcp:write":
+			model.Label = "写入 MCP 数据"
+			model.Description = "允许执行会修改后端状态的 MCP 操作。"
+			model.Risk = "high"
+		case "offline_access":
+			model.Label = "离线访问"
+			model.Description = "允许客户端使用 refresh token 延续授权。"
+			model.Risk = "medium"
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
+func consentWarnings(trustLevel, redirectURI string) []string {
+	warnings := []string{}
+	if strings.TrimSpace(trustLevel) == "" || trustLevel == "unknown_dcr" {
+		warnings = append(warnings, "该客户端来自动态注册，尚未验证发布者。")
+	}
+	if parsed, err := url.Parse(redirectURI); err == nil {
+		host := strings.ToLower(parsed.Hostname())
+		if host == "localhost" || host == "127.0.0.1" {
+			warnings = append(warnings, "授权码将返回到当前设备上的本地回调端口。")
+		}
+	}
+	return warnings
 }
 
 func (s Service) ExchangeAuthorizationCode(ctx context.Context, cmd AuthorizationCodeTokenCommand) (OAuthTokenResult, error) {
