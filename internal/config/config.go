@@ -19,9 +19,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	HTTPListen   string        `yaml:"http_listen"`
-	ReadTimeout  time.Duration `yaml:"read_timeout"`
-	WriteTimeout time.Duration `yaml:"write_timeout"`
+	HTTPListen         string        `yaml:"http_listen"`
+	ReadTimeout        time.Duration `yaml:"read_timeout"`
+	WriteTimeout       time.Duration `yaml:"write_timeout"`
+	CORSAllowedOrigins []string      `yaml:"cors_allowed_origins"`
 }
 
 type LoggingConfig struct {
@@ -95,6 +96,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Server.WriteTimeout == 0 {
 		c.Server.WriteTimeout = 10 * time.Second
+	}
+	if len(c.Server.CORSAllowedOrigins) == 0 {
+		c.Server.CORSAllowedOrigins = []string{"http://127.0.0.1:5173", "http://localhost:5173"}
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"

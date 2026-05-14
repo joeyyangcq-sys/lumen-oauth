@@ -79,6 +79,25 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 	}
 
 	h := New(cfg, logging.New("error", "json"), nil, authSvc, dcr.Service{}, inviteuc.Service{}, rbac.Service{})
+	preflightReq := httptest.NewRequest(http.MethodOptions, "/auth/logout", nil)
+	preflightReq.Header.Set("Origin", "http://127.0.0.1:5173")
+	preflightReq.Header.Set("Access-Control-Request-Method", "POST")
+	preflightReq.Header.Set("Access-Control-Request-Headers", "Content-Type, X-CSRF-Token")
+	preflightRec := httptest.NewRecorder()
+	h.ServeHTTP(preflightRec, preflightReq)
+	if preflightRec.Code != http.StatusNoContent {
+		t.Fatalf("preflight status=%d body=%s", preflightRec.Code, preflightRec.Body.String())
+	}
+	if preflightRec.Header().Get("Access-Control-Allow-Origin") != "http://127.0.0.1:5173" {
+		t.Fatalf("preflight allow-origin=%q", preflightRec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if preflightRec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("preflight allow-credentials=%q", preflightRec.Header().Get("Access-Control-Allow-Credentials"))
+	}
+	if !strings.Contains(preflightRec.Header().Get("Access-Control-Allow-Headers"), "X-CSRF-Token") {
+		t.Fatalf("preflight allow-headers missing csrf: %q", preflightRec.Header().Get("Access-Control-Allow-Headers"))
+	}
+
 	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"email":"admin@example.com","password":"admin"}`))
 	loginReq.Header.Set("Content-Type", "application/json")
 	loginRec := httptest.NewRecorder()
@@ -290,6 +309,7 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 
 	logoutReq := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
 	logoutReq.AddCookie(sessionCookie)
+	logoutReq.Header.Set("Origin", "http://127.0.0.1:5173")
 	logoutReq.Header.Set("X-CSRF-Token", loginBody.CSRFToken)
 	logoutRec := httptest.NewRecorder()
 	h.ServeHTTP(logoutRec, logoutReq)
@@ -298,6 +318,12 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 	}
 	if logoutRec.Header().Get("Content-Security-Policy") == "" || logoutRec.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("missing security headers: %#v", logoutRec.Header())
+	}
+	if logoutRec.Header().Get("Access-Control-Allow-Origin") != "http://127.0.0.1:5173" {
+		t.Fatalf("logout allow-origin=%q", logoutRec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if logoutRec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("logout allow-credentials=%q", logoutRec.Header().Get("Access-Control-Allow-Credentials"))
 	}
 }
 

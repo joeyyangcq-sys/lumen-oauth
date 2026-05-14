@@ -58,7 +58,9 @@ func New(
 
 	mws := []middleware.Middleware{
 		middleware.SecurityHeaders,
-		middleware.CORS,
+		middleware.CORSWithOptions(middleware.CORSOptions{
+			AllowedOrigins: cfg.Server.CORSAllowedOrigins,
+		}),
 		middleware.RequestID,
 		middleware.Recovery(log),
 		middleware.AccessLog(log),
