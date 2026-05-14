@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
 	"github.com/joey/lumen-oauth/internal/application/ports"
@@ -28,12 +30,26 @@ var (
 	ErrNotImplemented = errors.New("sqlite repository method not implemented")
 )
 
+const (
+	driverPostgres = "postgres"
+	driverSQLite   = "sqlite"
+)
+
 type Repositories struct {
-	DB *sql.DB
+	DB     *sql.DB
+	driver string
 }
 
 func OpenAndInit(path string) (Repositories, error) {
-	db, err := sql.Open("sqlite", path)
+	return openAndInit(driverSQLite, driverSQLite, path)
+}
+
+func OpenPostgresAndInit(url string) (Repositories, error) {
+	return openAndInit(driverPostgres, "pgx", url)
+}
+
+func openAndInit(driver, sqlDriver, dataSource string) (Repositories, error) {
+	db, err := sql.Open(sqlDriver, dataSource)
 	if err != nil {
 		return Repositories{}, err
 	}
@@ -41,7 +57,7 @@ func OpenAndInit(path string) (Repositories, error) {
 		_ = db.Close()
 		return Repositories{}, err
 	}
-	repos := Repositories{DB: db}
+	repos := Repositories{DB: db, driver: driver}
 	if err := repos.initSchema(context.Background()); err != nil {
 		_ = db.Close()
 		return Repositories{}, err
@@ -51,6 +67,41 @@ func OpenAndInit(path string) (Repositories, error) {
 		return Repositories{}, err
 	}
 	return repos, nil
+}
+
+func (r Repositories) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return r.DB.ExecContext(ctx, r.rebind(query), args...)
+}
+
+func (r Repositories) execTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (sql.Result, error) {
+	return tx.ExecContext(ctx, r.rebind(query), args...)
+}
+
+func (r Repositories) query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return r.DB.QueryContext(ctx, r.rebind(query), args...)
+}
+
+func (r Repositories) queryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return r.DB.QueryRowContext(ctx, r.rebind(query), args...)
+}
+
+func (r Repositories) rebind(query string) string {
+	if r.driver != driverPostgres {
+		return query
+	}
+	var b strings.Builder
+	b.Grow(len(query) + 8)
+	arg := 1
+	for _, ch := range query {
+		if ch != '?' {
+			b.WriteRune(ch)
+			continue
+		}
+		b.WriteByte('$')
+		b.WriteString(strconv.Itoa(arg))
+		arg++
+	}
+	return b.String()
 }
 
 func (r Repositories) Close() error {
@@ -157,7 +208,7 @@ func (r Repositories) initSchema(ctx context.Context) error {
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE IF NOT EXISTS oauth_audit_log (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id ` + r.auditIDColumn() + `,
 			action TEXT NOT NULL,
 			actor TEXT NOT NULL,
 			client_id TEXT NOT NULL,
@@ -168,7 +219,7 @@ func (r Repositories) initSchema(ctx context.Context) error {
 		);`,
 	}
 	for _, stmt := range stmts {
-		if _, err := r.DB.ExecContext(ctx, stmt); err != nil {
+		if _, err := r.exec(ctx, stmt); err != nil {
 			return err
 		}
 	}
@@ -176,6 +227,13 @@ func (r Repositories) initSchema(ctx context.Context) error {
 		return err
 	}
 	return r.ensureAuthSessionColumns(ctx)
+}
+
+func (r Repositories) auditIDColumn() string {
+	if r.driver == driverPostgres {
+		return "BIGSERIAL PRIMARY KEY"
+	}
+	return "INTEGER PRIMARY KEY AUTOINCREMENT"
 }
 
 func (r Repositories) ensureOAuthClientColumns(ctx context.Context) error {
@@ -196,7 +254,7 @@ func (r Repositories) ensureOAuthClientColumns(ctx context.Context) error {
 		if existing[name] {
 			continue
 		}
-		if _, err := r.DB.ExecContext(ctx, stmt); err != nil {
+		if _, err := r.exec(ctx, stmt); err != nil {
 			return err
 		}
 	}
@@ -215,7 +273,7 @@ func (r Repositories) ensureAuthSessionColumns(ctx context.Context) error {
 		if existing[name] {
 			continue
 		}
-		if _, err := r.DB.ExecContext(ctx, stmt); err != nil {
+		if _, err := r.exec(ctx, stmt); err != nil {
 			return err
 		}
 	}
@@ -223,7 +281,30 @@ func (r Repositories) ensureAuthSessionColumns(ctx context.Context) error {
 }
 
 func (r Repositories) tableColumns(ctx context.Context, table string) (map[string]bool, error) {
-	rows, err := r.DB.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if r.driver == driverPostgres {
+		rows, err := r.query(ctx, `
+			SELECT column_name
+			FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = ?`, table)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		out := make(map[string]bool)
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return nil, err
+			}
+			out[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	rows, err := r.query(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
 		return nil, err
 	}
@@ -256,9 +337,12 @@ func (r Repositories) seedLocalDevData(ctx context.Context) error {
 	const defaultRoleName = "local-dev-operator"
 
 	clientSecretHash := hashSecretSHA256(defaultClientSecret)
-	if _, err := r.DB.ExecContext(
+	if _, err := r.exec(
 		ctx,
-		`INSERT OR IGNORE INTO oauth_clients (id, name, secret_sha256, grant_types, scopes, disabled) VALUES (?, ?, ?, ?, ?, 0)`,
+		r.insertIgnore(
+			`INSERT OR IGNORE INTO oauth_clients (id, name, secret_sha256, grant_types, scopes, disabled) VALUES (?, ?, ?, ?, ?, 0)`,
+			`INSERT INTO oauth_clients (id, name, secret_sha256, grant_types, scopes, disabled) VALUES (?, ?, ?, ?, ?, 0) ON CONFLICT (id) DO NOTHING`,
+		),
 		defaultClientID,
 		"Local Dev Client",
 		clientSecretHash,
@@ -267,9 +351,12 @@ func (r Repositories) seedLocalDevData(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
-	if _, err := r.DB.ExecContext(
+	if _, err := r.exec(
 		ctx,
-		`INSERT OR IGNORE INTO subject_roles (subject, role_name) VALUES (?, ?)`,
+		r.insertIgnore(
+			`INSERT OR IGNORE INTO subject_roles (subject, role_name) VALUES (?, ?)`,
+			`INSERT INTO subject_roles (subject, role_name) VALUES (?, ?) ON CONFLICT (subject, role_name) DO NOTHING`,
+		),
 		defaultClientID,
 		defaultRoleName,
 	); err != nil {
@@ -285,9 +372,12 @@ func (r Repositories) seedLocalDevData(ctx context.Context) error {
 		"admin:dangerous",
 	}
 	for _, scope := range defaultScopes {
-		if _, err := r.DB.ExecContext(
+		if _, err := r.exec(
 			ctx,
-			`INSERT OR IGNORE INTO role_scopes (role_name, scope) VALUES (?, ?)`,
+			r.insertIgnore(
+				`INSERT OR IGNORE INTO role_scopes (role_name, scope) VALUES (?, ?)`,
+				`INSERT INTO role_scopes (role_name, scope) VALUES (?, ?) ON CONFLICT (role_name, scope) DO NOTHING`,
+			),
 			defaultRoleName,
 			scope,
 		); err != nil {
@@ -297,8 +387,15 @@ func (r Repositories) seedLocalDevData(ctx context.Context) error {
 	return nil
 }
 
+func (r Repositories) insertIgnore(sqliteSQL, postgresSQL string) string {
+	if r.driver == driverPostgres {
+		return postgresSQL
+	}
+	return sqliteSQL
+}
+
 func (r Repositories) GetByID(ctx context.Context, clientID string) (client.OAuthClient, error) {
-	row := r.DB.QueryRowContext(ctx, `
+	row := r.queryRow(ctx, `
 		SELECT id, name, secret_sha256, redirect_uris, grant_types, response_types, scopes,
 		       token_endpoint_auth_method, trust_level, client_id_issued_at, client_secret_expires_at, disabled
 		FROM oauth_clients
@@ -356,7 +453,7 @@ func (r Repositories) Save(ctx context.Context, in client.OAuthClient) error {
 	if strings.TrimSpace(in.ClientSecretSHA256) == "" && strings.TrimSpace(in.TokenEndpointAuthMethod) != "none" {
 		return errors.New("client secret hash cannot be empty")
 	}
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		INSERT INTO oauth_clients (
 			id, name, secret_sha256, redirect_uris, grant_types, response_types, scopes,
 			token_endpoint_auth_method, trust_level, client_id_issued_at, client_secret_expires_at,
@@ -401,7 +498,7 @@ func (r Repositories) GetUserByEmail(ctx context.Context, email string) (user.Us
 }
 
 func (r Repositories) getUser(ctx context.Context, where string, arg string) (user.User, error) {
-	row := r.DB.QueryRowContext(ctx, `
+	row := r.queryRow(ctx, `
 		SELECT id, email, name, password_hash, is_admin, disabled, force_change_password,
 		       last_login_at, created_at, updated_at
 		FROM users
@@ -451,7 +548,7 @@ func (r Repositories) SaveUser(ctx context.Context, in user.User) error {
 	if strings.TrimSpace(in.PasswordHash) == "" {
 		return errors.New("user password hash cannot be empty")
 	}
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		INSERT INTO users (
 			id, email, name, password_hash, is_admin, disabled, force_change_password, updated_at
 		)
@@ -476,12 +573,12 @@ func (r Repositories) SaveUser(ctx context.Context, in user.User) error {
 }
 
 func (r Repositories) UpdateUserLastLogin(ctx context.Context, id string, at time.Time) error {
-	_, err := r.DB.ExecContext(ctx, `UPDATE users SET last_login_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, at.UTC(), id)
+	_, err := r.exec(ctx, `UPDATE users SET last_login_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, at.UTC(), id)
 	return err
 }
 
 func (r Repositories) SaveAuthorizationCode(ctx context.Context, code authcode.AuthorizationCode) error {
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		INSERT INTO oauth_authorization_codes (
 			id, code_hash, client_id, user_id, redirect_uri, resource, scope,
 			code_challenge, code_challenge_method, expires_at, used_at
@@ -502,7 +599,7 @@ func (r Repositories) SaveAuthorizationCode(ctx context.Context, code authcode.A
 }
 
 func (r Repositories) GetAuthorizationCodeByHash(ctx context.Context, codeHash string) (authcode.AuthorizationCode, error) {
-	row := r.DB.QueryRowContext(ctx, `
+	row := r.queryRow(ctx, `
 		SELECT id, code_hash, client_id, user_id, redirect_uri, resource, scope,
 		       code_challenge, code_challenge_method, expires_at, used_at, created_at
 		FROM oauth_authorization_codes
@@ -541,7 +638,7 @@ func (r Repositories) GetAuthorizationCodeByHash(ctx context.Context, codeHash s
 }
 
 func (r Repositories) MarkAuthorizationCodeUsed(ctx context.Context, codeHash string, usedAt time.Time) error {
-	res, err := r.DB.ExecContext(ctx, `UPDATE oauth_authorization_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL`, usedAt.UTC(), codeHash)
+	res, err := r.exec(ctx, `UPDATE oauth_authorization_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL`, usedAt.UTC(), codeHash)
 	if err != nil {
 		return err
 	}
@@ -556,7 +653,7 @@ func (r Repositories) MarkAuthorizationCodeUsed(ctx context.Context, codeHash st
 }
 
 func (r Repositories) UpsertGrant(ctx context.Context, in grant.Grant) error {
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		INSERT INTO oauth_grants (id, user_id, client_id, resource, scope, revoked_at)
 		VALUES (?, ?, ?, ?, ?, NULL)
 		ON CONFLICT(user_id, client_id, resource) DO UPDATE SET
@@ -572,7 +669,7 @@ func (r Repositories) UpsertGrant(ctx context.Context, in grant.Grant) error {
 }
 
 func (r Repositories) GetActiveGrant(ctx context.Context, userID, clientID, resource string) (grant.Grant, error) {
-	row := r.DB.QueryRowContext(ctx, `
+	row := r.queryRow(ctx, `
 		SELECT id, user_id, client_id, resource, scope, created_at, revoked_at
 		FROM oauth_grants
 		WHERE user_id = ? AND client_id = ? AND resource = ? AND revoked_at IS NULL`,
@@ -599,7 +696,7 @@ func (r Repositories) GetActiveGrant(ctx context.Context, userID, clientID, reso
 }
 
 func (r Repositories) SaveRefreshToken(ctx context.Context, token refreshtoken.RefreshToken) error {
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		INSERT INTO oauth_refresh_tokens (
 			id, token_hash, grant_id, client_id, user_id, resource, scope,
 			expires_at, used_at, revoked_at, replaced_by_id
@@ -619,7 +716,7 @@ func (r Repositories) SaveRefreshToken(ctx context.Context, token refreshtoken.R
 }
 
 func (r Repositories) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (refreshtoken.RefreshToken, error) {
-	row := r.DB.QueryRowContext(ctx, `
+	row := r.queryRow(ctx, `
 		SELECT id, token_hash, grant_id, client_id, user_id, resource, scope,
 		       expires_at, used_at, revoked_at, replaced_by_id, created_at
 		FROM oauth_refresh_tokens
@@ -668,7 +765,7 @@ func (r Repositories) RotateRefreshToken(ctx context.Context, oldHash string, ne
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := r.execTx(ctx, tx, `
 		INSERT INTO oauth_refresh_tokens (
 			id, token_hash, grant_id, client_id, user_id, resource, scope,
 			expires_at, used_at, revoked_at, replaced_by_id
@@ -685,7 +782,7 @@ func (r Repositories) RotateRefreshToken(ctx context.Context, oldHash string, ne
 	); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `
+	res, err := r.execTx(ctx, tx, `
 		UPDATE oauth_refresh_tokens
 		SET used_at = ?, replaced_by_id = ?
 		WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL`,
@@ -707,7 +804,7 @@ func (r Repositories) RotateRefreshToken(ctx context.Context, oldHash string, ne
 }
 
 func (r Repositories) RevokeRefreshTokensByGrant(ctx context.Context, grantID string, revokedAt time.Time) error {
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		UPDATE oauth_refresh_tokens
 		SET revoked_at = ?
 		WHERE grant_id = ? AND revoked_at IS NULL`,
@@ -718,7 +815,7 @@ func (r Repositories) RevokeRefreshTokensByGrant(ctx context.Context, grantID st
 }
 
 func (r Repositories) SaveSession(ctx context.Context, session session.Session) error {
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		INSERT INTO auth_sessions (id, user_id, csrf_token_hash, expires_at, revoked_at)
 		VALUES (?, ?, ?, ?, NULL)`,
 		session.ID,
@@ -730,7 +827,7 @@ func (r Repositories) SaveSession(ctx context.Context, session session.Session) 
 }
 
 func (r Repositories) GetSessionByID(ctx context.Context, id string) (session.Session, error) {
-	row := r.DB.QueryRowContext(ctx, `
+	row := r.queryRow(ctx, `
 		SELECT id, user_id, csrf_token_hash, expires_at, revoked_at, created_at
 		FROM auth_sessions
 		WHERE id = ?`, id)
@@ -753,12 +850,12 @@ func (r Repositories) GetSessionByID(ctx context.Context, id string) (session.Se
 }
 
 func (r Repositories) RevokeSession(ctx context.Context, id string, revokedAt time.Time) error {
-	_, err := r.DB.ExecContext(ctx, `UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, revokedAt.UTC(), id)
+	_, err := r.exec(ctx, `UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, revokedAt.UTC(), id)
 	return err
 }
 
 func (r Repositories) ListForSubject(ctx context.Context, subject string) ([]role.Role, error) {
-	rows, err := r.DB.QueryContext(ctx, `
+	rows, err := r.query(ctx, `
 		SELECT sr.role_name, rs.scope
 		FROM subject_roles sr
 		LEFT JOIN role_scopes rs ON rs.role_name = sr.role_name
@@ -790,7 +887,7 @@ func (r Repositories) ListForSubject(ctx context.Context, subject string) ([]rol
 }
 
 func (r Repositories) ListRoles(ctx context.Context) ([]role.Role, error) {
-	rows, err := r.DB.QueryContext(ctx, `SELECT role_name, scope FROM role_scopes ORDER BY role_name ASC, scope ASC`)
+	rows, err := r.query(ctx, `SELECT role_name, scope FROM role_scopes ORDER BY role_name ASC, scope ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -821,14 +918,14 @@ func (r Repositories) UpsertRoleScopes(ctx context.Context, roleName string, sco
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM role_scopes WHERE role_name = ?`, roleName); err != nil {
+	if _, err := r.execTx(ctx, tx, `DELETE FROM role_scopes WHERE role_name = ?`, roleName); err != nil {
 		return err
 	}
 	for _, scope := range scopes {
 		if strings.TrimSpace(scope) == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO role_scopes (role_name, scope) VALUES (?, ?)`, roleName, scope); err != nil {
+		if _, err := r.execTx(ctx, tx, `INSERT INTO role_scopes (role_name, scope) VALUES (?, ?)`, roleName, scope); err != nil {
 			return err
 		}
 	}
@@ -841,12 +938,15 @@ func (r Repositories) BindRoleToSubject(ctx context.Context, subject, roleName s
 	if subject == "" || roleName == "" {
 		return errors.New("subject and role name are required")
 	}
-	_, err := r.DB.ExecContext(ctx, `INSERT OR IGNORE INTO subject_roles (subject, role_name) VALUES (?, ?)`, subject, roleName)
+	_, err := r.exec(ctx, r.insertIgnore(
+		`INSERT OR IGNORE INTO subject_roles (subject, role_name) VALUES (?, ?)`,
+		`INSERT INTO subject_roles (subject, role_name) VALUES (?, ?) ON CONFLICT (subject, role_name) DO NOTHING`,
+	), subject, roleName)
 	return err
 }
 
 func (r Repositories) Create(ctx context.Context, in invite.Invitation) error {
-	_, err := r.DB.ExecContext(ctx, `
+	_, err := r.exec(ctx, `
 		INSERT INTO invitations (code, email, role_name, expires_at, used_at, revoked_at)
 		VALUES (?, ?, ?, ?, NULL, NULL)`,
 		in.Code,
@@ -858,7 +958,7 @@ func (r Repositories) Create(ctx context.Context, in invite.Invitation) error {
 }
 
 func (r Repositories) GetByCode(ctx context.Context, code string) (invite.Invitation, error) {
-	row := r.DB.QueryRowContext(ctx, `
+	row := r.queryRow(ctx, `
 		SELECT code, email, role_name, expires_at, used_at, revoked_at
 		FROM invitations
 		WHERE code = ?`, code)
@@ -884,7 +984,7 @@ func (r Repositories) GetByCode(ctx context.Context, code string) (invite.Invita
 }
 
 func (r Repositories) MarkUsed(ctx context.Context, code string, usedAt time.Time) error {
-	res, err := r.DB.ExecContext(ctx, `UPDATE invitations SET used_at = ? WHERE code = ? AND used_at IS NULL`, usedAt.UTC(), code)
+	res, err := r.exec(ctx, `UPDATE invitations SET used_at = ? WHERE code = ? AND used_at IS NULL`, usedAt.UTC(), code)
 	if err != nil {
 		return err
 	}
@@ -903,7 +1003,7 @@ func (r Repositories) Record(ctx context.Context, event ports.AuditEvent) error 
 	if err != nil {
 		return err
 	}
-	_, err = r.DB.ExecContext(ctx, `
+	_, err = r.exec(ctx, `
 		INSERT INTO oauth_audit_log (action, actor, client_id, result, trace_id, details_json, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		event.Action,

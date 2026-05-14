@@ -83,8 +83,9 @@ type InviteConfig struct {
 }
 
 type StorageConfig struct {
-	Driver     string `yaml:"driver"`
-	SQLitePath string `yaml:"sqlite_path"`
+	Driver      string `yaml:"driver"`
+	SQLitePath  string `yaml:"sqlite_path"`
+	PostgresURL string `yaml:"postgres_url"`
 }
 
 func (c *Config) ApplyDefaults() {
@@ -159,10 +160,13 @@ func (c *Config) ApplyDefaults() {
 		c.Invite.TTL = 24 * time.Hour
 	}
 	if c.Storage.Driver == "" {
-		c.Storage.Driver = "sqlite"
+		c.Storage.Driver = "postgres"
 	}
 	if c.Storage.SQLitePath == "" {
 		c.Storage.SQLitePath = "./data/oauth.db"
+	}
+	if c.Storage.PostgresURL == "" {
+		c.Storage.PostgresURL = "postgres://lumen_oauth:lumen_oauth@127.0.0.1:5432/lumen_oauth?sslmode=disable"
 	}
 	if len(c.DCR.InitialAccessTokens) == 0 {
 		c.DCR.InitialAccessTokens = []string{"local-dev-iat"}
@@ -210,11 +214,17 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported dcr.mode: %q", c.DCR.Mode)
 	}
-	if c.Storage.Driver != "sqlite" {
+	switch c.Storage.Driver {
+	case "postgres":
+		if c.Storage.PostgresURL == "" {
+			return errors.New("storage.postgres_url cannot be empty when storage.driver=postgres")
+		}
+	case "sqlite":
+		if c.Storage.SQLitePath == "" {
+			return errors.New("storage.sqlite_path cannot be empty when storage.driver=sqlite")
+		}
+	default:
 		return fmt.Errorf("unsupported storage.driver: %q", c.Storage.Driver)
-	}
-	if c.Storage.SQLitePath == "" {
-		return errors.New("storage.sqlite_path cannot be empty")
 	}
 	return nil
 }

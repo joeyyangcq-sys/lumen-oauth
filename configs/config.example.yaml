@@ -82,5 +82,6 @@ invite:
   ttl: 24h
 
 storage:
-  driver: sqlite
+  driver: postgres
+  postgres_url: postgres://lumen_oauth:lumen_oauth@127.0.0.1:5432/lumen_oauth?sslmode=disable
   sqlite_path: ./data/oauth.db

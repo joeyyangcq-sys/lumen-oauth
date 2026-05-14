@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -33,7 +34,7 @@ type App struct {
 func New(cfg config.Config) (*App, error) {
 	log := logging.New(cfg.Logging.Level, cfg.Logging.Format)
 	metrics := observability.NewHTTPMetrics()
-	repos, err := sqlite.OpenAndInit(cfg.Storage.SQLitePath)
+	repos, err := openRepositories(cfg.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +108,17 @@ func New(cfg config.Config) (*App, error) {
 			WriteTimeout: cfg.Server.WriteTimeout,
 		},
 	}, nil
+}
+
+func openRepositories(cfg config.StorageConfig) (sqlite.Repositories, error) {
+	switch cfg.Driver {
+	case "postgres":
+		return sqlite.OpenPostgresAndInit(cfg.PostgresURL)
+	case "sqlite":
+		return sqlite.OpenAndInit(cfg.SQLitePath)
+	default:
+		return sqlite.Repositories{}, fmt.Errorf("unsupported storage.driver: %q", cfg.Driver)
+	}
 }
 
 func (a *App) Run(ctx context.Context) error {
