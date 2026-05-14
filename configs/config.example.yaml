@@ -45,6 +45,17 @@ oauth:
     - admin
     - admin:dangerous
 
+auth:
+  password_hash:
+    algorithm: pbkdf2-sha256
+
+bootstrap_admin:
+  enabled: true
+  email: admin@example.com
+  password: admin
+  name: Default Admin
+  force_change_password: true
+
 dcr:
   enabled: true
   mode: guarded

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/joey/lumen-oauth/internal/application/auth"
@@ -24,11 +25,20 @@ func (h TokenHandler) Token(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grantType := strings.TrimSpace(r.FormValue("grant_type"))
-	if grantType != "client_credentials" {
-		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "only client_credentials is supported in phase-1", nil)
+	switch grantType {
+	case "client_credentials":
+		h.clientCredentials(w, r)
+	case "authorization_code":
+		h.authorizationCode(w, r)
+	case "refresh_token":
+		h.refreshToken(w, r)
+	default:
+		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported grant_type", nil)
 		return
 	}
+}
 
+func (h TokenHandler) clientCredentials(w http.ResponseWriter, r *http.Request) {
 	clientID := strings.TrimSpace(r.FormValue("client_id"))
 	clientSecret := strings.TrimSpace(r.FormValue("client_secret"))
 	if clientID == "" {
@@ -67,6 +77,107 @@ func (h TokenHandler) Token(w http.ResponseWriter, r *http.Request) {
 		"expires_in":   int(issued.ExpiresAt.Sub(issued.IssuedAt).Seconds()),
 		"scope":        strings.Join(issued.Scopes, " "),
 	})
+}
+
+func (h TokenHandler) authorizationCode(w http.ResponseWriter, r *http.Request) {
+	issued, err := h.AuthService.ExchangeAuthorizationCode(r.Context(), auth.AuthorizationCodeTokenCommand{
+		Code:         strings.TrimSpace(r.FormValue("code")),
+		ClientID:     strings.TrimSpace(r.FormValue("client_id")),
+		ClientSecret: strings.TrimSpace(r.FormValue("client_secret")),
+		RedirectURI:  strings.TrimSpace(r.FormValue("redirect_uri")),
+		CodeVerifier: strings.TrimSpace(r.FormValue("code_verifier")),
+		Resource:     strings.TrimSpace(r.FormValue("resource")),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrPKCEVerificationFailed):
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", err.Error(), nil)
+		case errors.Is(err, auth.ErrInvalidClientCredentials):
+			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", err.Error(), nil)
+		default:
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", err.Error(), nil)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token":  issued.AccessToken.Value,
+		"token_type":    "Bearer",
+		"expires_in":    int(issued.AccessToken.ExpiresAt.Sub(issued.AccessToken.IssuedAt).Seconds()),
+		"scope":         strings.Join(issued.AccessToken.Scopes, " "),
+		"refresh_token": issued.RefreshToken,
+	})
+}
+
+func (h TokenHandler) refreshToken(w http.ResponseWriter, r *http.Request) {
+	issued, err := h.AuthService.Refresh(r.Context(), auth.RefreshTokenCommand{
+		RefreshToken: strings.TrimSpace(r.FormValue("refresh_token")),
+		ClientID:     strings.TrimSpace(r.FormValue("client_id")),
+		Resource:     strings.TrimSpace(r.FormValue("resource")),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrRefreshTokenReuse):
+			writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", err.Error(), nil)
+		default:
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", err.Error(), nil)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token":  issued.AccessToken.Value,
+		"token_type":    "Bearer",
+		"expires_in":    int(issued.AccessToken.ExpiresAt.Sub(issued.AccessToken.IssuedAt).Seconds()),
+		"scope":         strings.Join(issued.AccessToken.Scopes, " "),
+		"refresh_token": issued.RefreshToken,
+	})
+}
+
+type AuthorizeHandler struct {
+	AuthService auth.Service
+}
+
+func (h AuthorizeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required", nil)
+		return
+	}
+	q := r.URL.Query()
+	out, err := h.AuthService.Authorize(r.Context(), auth.AuthorizeCommand{
+		Bearer:              r.Header.Get("Authorization"),
+		ResponseType:        strings.TrimSpace(q.Get("response_type")),
+		ClientID:            strings.TrimSpace(q.Get("client_id")),
+		RedirectURI:         strings.TrimSpace(q.Get("redirect_uri")),
+		Scope:               strings.Fields(q.Get("scope")),
+		State:               q.Get("state"),
+		CodeChallenge:       strings.TrimSpace(q.Get("code_challenge")),
+		CodeChallengeMethod: strings.TrimSpace(q.Get("code_challenge_method")),
+		Resource:            strings.TrimSpace(q.Get("resource")),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrUnauthorized):
+			writeOAuthError(w, http.StatusUnauthorized, "login_required", err.Error(), nil)
+		case errors.Is(err, auth.ErrNoScopeGranted):
+			writeOAuthError(w, http.StatusForbidden, "invalid_scope", err.Error(), nil)
+		default:
+			writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+		}
+		return
+	}
+	redirectURL, err := url.Parse(out.RedirectURI)
+	if err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid redirect_uri", nil)
+		return
+	}
+	values := redirectURL.Query()
+	values.Set("code", out.Code)
+	if out.State != "" {
+		values.Set("state", out.State)
+	}
+	redirectURL.RawQuery = values.Encode()
+	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
 }
 
 func parseScopeParam(raw string) []string {

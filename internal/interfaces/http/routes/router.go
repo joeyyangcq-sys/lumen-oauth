@@ -29,6 +29,8 @@ func New(
 	tokenHandler := handlers.TokenHandler{
 		AuthService: authSvc,
 	}
+	authorizeHandler := handlers.AuthorizeHandler{AuthService: authSvc}
+	authHandler := handlers.AuthHandler{Service: authSvc}
 	dcrHandler := handlers.DCRHandler{Service: dcrSvc}
 	inviteHandler := handlers.InviteHandler{Service: inviteSvc}
 	adminHandler := handlers.AdminHandler{RBAC: rbacSvc}
@@ -40,8 +42,11 @@ func New(
 	mux.HandleFunc("/.well-known/jwks.json", o.JWKS)
 	mux.HandleFunc("/oauth/jwks.json", o.JWKS)
 	mux.HandleFunc("/oauth/token", tokenHandler.Token)
+	mux.HandleFunc("/oauth/authorize", authorizeHandler.Authorize)
 	mux.HandleFunc("/oauth/register", dcrHandler.RegisterClient)
 	mux.HandleFunc("/connect/register", dcrHandler.RegisterClient)
+	mux.HandleFunc("/auth/login", authHandler.Login)
+	mux.HandleFunc("/auth/me", authHandler.Me)
 	mux.HandleFunc("/auth/invitations", inviteHandler.CreateInvitation)
 	mux.HandleFunc("/auth/register/accept", inviteHandler.AcceptInvitation)
 	mux.HandleFunc("/admin/roles", methodSwitch(adminHandler.ListRoles, adminHandler.UpsertRole))

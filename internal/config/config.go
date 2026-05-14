@@ -7,13 +7,15 @@ import (
 )
 
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	Logging       LoggingConfig       `yaml:"logging"`
-	Observability ObservabilityConfig `yaml:"observability"`
-	OAuth         OAuthConfig         `yaml:"oauth"`
-	DCR           DCRConfig           `yaml:"dcr"`
-	Invite        InviteConfig        `yaml:"invite"`
-	Storage       StorageConfig       `yaml:"storage"`
+	Server         ServerConfig         `yaml:"server"`
+	Logging        LoggingConfig        `yaml:"logging"`
+	Observability  ObservabilityConfig  `yaml:"observability"`
+	OAuth          OAuthConfig          `yaml:"oauth"`
+	Auth           AuthConfig           `yaml:"auth"`
+	BootstrapAdmin BootstrapAdminConfig `yaml:"bootstrap_admin"`
+	DCR            DCRConfig            `yaml:"dcr"`
+	Invite         InviteConfig         `yaml:"invite"`
+	Storage        StorageConfig        `yaml:"storage"`
 }
 
 type ServerConfig struct {
@@ -52,6 +54,22 @@ type DCRConfig struct {
 	AllowedRedirects           AllowedRedirectConfig `yaml:"allowed_redirects"`
 }
 
+type AuthConfig struct {
+	PasswordHash PasswordHashConfig `yaml:"password_hash"`
+}
+
+type PasswordHashConfig struct {
+	Algorithm string `yaml:"algorithm"`
+}
+
+type BootstrapAdminConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	Email               string `yaml:"email"`
+	Password            string `yaml:"password"`
+	Name                string `yaml:"name"`
+	ForceChangePassword bool   `yaml:"force_change_password"`
+}
+
 type AllowedRedirectConfig struct {
 	LoopbackEnabled bool     `yaml:"loopback_enabled"`
 	LoopbackPaths   []string `yaml:"loopback_paths"`
@@ -86,6 +104,18 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Observability.MetricsPath == "" {
 		c.Observability.MetricsPath = "/metrics"
+	}
+	if c.Auth.PasswordHash.Algorithm == "" {
+		c.Auth.PasswordHash.Algorithm = "pbkdf2-sha256"
+	}
+	if c.BootstrapAdmin.Email == "" {
+		c.BootstrapAdmin.Email = "admin@example.com"
+	}
+	if c.BootstrapAdmin.Password == "" {
+		c.BootstrapAdmin.Password = "admin"
+	}
+	if c.BootstrapAdmin.Name == "" {
+		c.BootstrapAdmin.Name = "Default Admin"
 	}
 	if c.OAuth.AccessTokenTTL == 0 {
 		c.OAuth.AccessTokenTTL = 15 * time.Minute
@@ -153,6 +183,17 @@ func (c Config) Validate() error {
 	}
 	if c.OAuth.AccessTokenTTL <= 0 {
 		return fmt.Errorf("oauth.access_token_ttl must be > 0, got %s", c.OAuth.AccessTokenTTL)
+	}
+	if c.Auth.PasswordHash.Algorithm != "pbkdf2-sha256" {
+		return fmt.Errorf("unsupported auth.password_hash.algorithm: %q", c.Auth.PasswordHash.Algorithm)
+	}
+	if c.BootstrapAdmin.Enabled {
+		if c.BootstrapAdmin.Email == "" {
+			return errors.New("bootstrap_admin.email cannot be empty when enabled")
+		}
+		if c.BootstrapAdmin.Password == "" {
+			return errors.New("bootstrap_admin.password cannot be empty when enabled")
+		}
 	}
 	if c.DCR.IATRequired && c.OAuth.SigningKey == "" {
 		return errors.New("dcr.iat_required=true requires oauth.signing_key")

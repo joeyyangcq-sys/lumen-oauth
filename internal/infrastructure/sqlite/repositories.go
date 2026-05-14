@@ -14,9 +14,13 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/joey/lumen-oauth/internal/application/ports"
+	"github.com/joey/lumen-oauth/internal/domain/authcode"
 	"github.com/joey/lumen-oauth/internal/domain/client"
+	"github.com/joey/lumen-oauth/internal/domain/grant"
 	"github.com/joey/lumen-oauth/internal/domain/invite"
+	"github.com/joey/lumen-oauth/internal/domain/refreshtoken"
 	"github.com/joey/lumen-oauth/internal/domain/role"
+	"github.com/joey/lumen-oauth/internal/domain/user"
 )
 
 var (
@@ -73,6 +77,56 @@ func (r Repositories) initSchema(ctx context.Context) error {
 			disabled INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			email TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL DEFAULT '',
+			password_hash TEXT NOT NULL,
+			is_admin INTEGER NOT NULL DEFAULT 0,
+			disabled INTEGER NOT NULL DEFAULT 0,
+			force_change_password INTEGER NOT NULL DEFAULT 0,
+			last_login_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+			id TEXT PRIMARY KEY,
+			code_hash TEXT NOT NULL UNIQUE,
+			client_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			redirect_uri TEXT NOT NULL,
+			resource TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT '',
+			code_challenge TEXT NOT NULL,
+			code_challenge_method TEXT NOT NULL,
+			expires_at TIMESTAMP NOT NULL,
+			used_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS oauth_grants (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			client_id TEXT NOT NULL,
+			resource TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			revoked_at TIMESTAMP NULL,
+			UNIQUE(user_id, client_id, resource)
+		);`,
+		`CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+			id TEXT PRIMARY KEY,
+			token_hash TEXT NOT NULL UNIQUE,
+			grant_id TEXT NOT NULL,
+			client_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			resource TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT '',
+			expires_at TIMESTAMP NOT NULL,
+			used_at TIMESTAMP NULL,
+			revoked_at TIMESTAMP NULL,
+			replaced_by_id TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE IF NOT EXISTS subject_roles (
 			subject TEXT NOT NULL,
@@ -303,6 +357,331 @@ func (r Repositories) Save(ctx context.Context, in client.OAuthClient) error {
 		in.ClientIDIssuedAt,
 		in.ClientSecretExpiresAt,
 		boolToInt(in.Disabled),
+	)
+	return err
+}
+
+func (r Repositories) GetUserByID(ctx context.Context, id string) (user.User, error) {
+	return r.getUser(ctx, `id = ?`, id)
+}
+
+func (r Repositories) GetUserByEmail(ctx context.Context, email string) (user.User, error) {
+	return r.getUser(ctx, `lower(email) = lower(?)`, email)
+}
+
+func (r Repositories) getUser(ctx context.Context, where string, arg string) (user.User, error) {
+	row := r.DB.QueryRowContext(ctx, `
+		SELECT id, email, name, password_hash, is_admin, disabled, force_change_password,
+		       last_login_at, created_at, updated_at
+		FROM users
+		WHERE `+where, arg)
+	var (
+		out                 user.User
+		isAdmin             int
+		disabled            int
+		forceChangePassword int
+		lastLoginAt         sql.NullTime
+		createdAt           time.Time
+		updatedAt           time.Time
+	)
+	if err := row.Scan(
+		&out.ID,
+		&out.Email,
+		&out.Name,
+		&out.PasswordHash,
+		&isAdmin,
+		&disabled,
+		&forceChangePassword,
+		&lastLoginAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return user.User{}, err
+	}
+	out.IsAdmin = isAdmin == 1
+	out.Disabled = disabled == 1
+	out.ForceChangePassword = forceChangePassword == 1
+	if lastLoginAt.Valid {
+		t := lastLoginAt.Time.UTC()
+		out.LastLoginAt = &t
+	}
+	out.CreatedAt = createdAt.UTC()
+	out.UpdatedAt = updatedAt.UTC()
+	return out, nil
+}
+
+func (r Repositories) SaveUser(ctx context.Context, in user.User) error {
+	if strings.TrimSpace(in.ID) == "" {
+		return errors.New("user id cannot be empty")
+	}
+	if strings.TrimSpace(in.Email) == "" {
+		return errors.New("user email cannot be empty")
+	}
+	if strings.TrimSpace(in.PasswordHash) == "" {
+		return errors.New("user password hash cannot be empty")
+	}
+	_, err := r.DB.ExecContext(ctx, `
+		INSERT INTO users (
+			id, email, name, password_hash, is_admin, disabled, force_change_password, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			email = excluded.email,
+			name = excluded.name,
+			password_hash = excluded.password_hash,
+			is_admin = excluded.is_admin,
+			disabled = excluded.disabled,
+			force_change_password = excluded.force_change_password,
+			updated_at = CURRENT_TIMESTAMP`,
+		in.ID,
+		strings.TrimSpace(strings.ToLower(in.Email)),
+		in.Name,
+		in.PasswordHash,
+		boolToInt(in.IsAdmin),
+		boolToInt(in.Disabled),
+		boolToInt(in.ForceChangePassword),
+	)
+	return err
+}
+
+func (r Repositories) UpdateUserLastLogin(ctx context.Context, id string, at time.Time) error {
+	_, err := r.DB.ExecContext(ctx, `UPDATE users SET last_login_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, at.UTC(), id)
+	return err
+}
+
+func (r Repositories) SaveAuthorizationCode(ctx context.Context, code authcode.AuthorizationCode) error {
+	_, err := r.DB.ExecContext(ctx, `
+		INSERT INTO oauth_authorization_codes (
+			id, code_hash, client_id, user_id, redirect_uri, resource, scope,
+			code_challenge, code_challenge_method, expires_at, used_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+		code.ID,
+		code.CodeHash,
+		code.ClientID,
+		code.UserID,
+		code.RedirectURI,
+		code.Resource,
+		strings.Join(code.Scopes, " "),
+		code.CodeChallenge,
+		code.CodeChallengeMethod,
+		code.ExpiresAt.UTC(),
+	)
+	return err
+}
+
+func (r Repositories) GetAuthorizationCodeByHash(ctx context.Context, codeHash string) (authcode.AuthorizationCode, error) {
+	row := r.DB.QueryRowContext(ctx, `
+		SELECT id, code_hash, client_id, user_id, redirect_uri, resource, scope,
+		       code_challenge, code_challenge_method, expires_at, used_at, created_at
+		FROM oauth_authorization_codes
+		WHERE code_hash = ?`, codeHash)
+	var (
+		out       authcode.AuthorizationCode
+		scope     string
+		expiresAt time.Time
+		usedAt    sql.NullTime
+		createdAt time.Time
+	)
+	if err := row.Scan(
+		&out.ID,
+		&out.CodeHash,
+		&out.ClientID,
+		&out.UserID,
+		&out.RedirectURI,
+		&out.Resource,
+		&scope,
+		&out.CodeChallenge,
+		&out.CodeChallengeMethod,
+		&expiresAt,
+		&usedAt,
+		&createdAt,
+	); err != nil {
+		return authcode.AuthorizationCode{}, err
+	}
+	out.Scopes = strings.Fields(scope)
+	out.ExpiresAt = expiresAt.UTC()
+	out.CreatedAt = createdAt.UTC()
+	if usedAt.Valid {
+		t := usedAt.Time.UTC()
+		out.UsedAt = &t
+	}
+	return out, nil
+}
+
+func (r Repositories) MarkAuthorizationCodeUsed(ctx context.Context, codeHash string, usedAt time.Time) error {
+	res, err := r.DB.ExecContext(ctx, `UPDATE oauth_authorization_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL`, usedAt.UTC(), codeHash)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r Repositories) UpsertGrant(ctx context.Context, in grant.Grant) error {
+	_, err := r.DB.ExecContext(ctx, `
+		INSERT INTO oauth_grants (id, user_id, client_id, resource, scope, revoked_at)
+		VALUES (?, ?, ?, ?, ?, NULL)
+		ON CONFLICT(user_id, client_id, resource) DO UPDATE SET
+			scope = excluded.scope,
+			revoked_at = NULL`,
+		in.ID,
+		in.UserID,
+		in.ClientID,
+		in.Resource,
+		strings.Join(in.Scopes, " "),
+	)
+	return err
+}
+
+func (r Repositories) GetActiveGrant(ctx context.Context, userID, clientID, resource string) (grant.Grant, error) {
+	row := r.DB.QueryRowContext(ctx, `
+		SELECT id, user_id, client_id, resource, scope, created_at, revoked_at
+		FROM oauth_grants
+		WHERE user_id = ? AND client_id = ? AND resource = ? AND revoked_at IS NULL`,
+		userID,
+		clientID,
+		resource,
+	)
+	var (
+		out       grant.Grant
+		scope     string
+		createdAt time.Time
+		revokedAt sql.NullTime
+	)
+	if err := row.Scan(&out.ID, &out.UserID, &out.ClientID, &out.Resource, &scope, &createdAt, &revokedAt); err != nil {
+		return grant.Grant{}, err
+	}
+	out.Scopes = strings.Fields(scope)
+	out.CreatedAt = createdAt.UTC()
+	if revokedAt.Valid {
+		t := revokedAt.Time.UTC()
+		out.RevokedAt = &t
+	}
+	return out, nil
+}
+
+func (r Repositories) SaveRefreshToken(ctx context.Context, token refreshtoken.RefreshToken) error {
+	_, err := r.DB.ExecContext(ctx, `
+		INSERT INTO oauth_refresh_tokens (
+			id, token_hash, grant_id, client_id, user_id, resource, scope,
+			expires_at, used_at, revoked_at, replaced_by_id
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+		token.ID,
+		token.TokenHash,
+		token.GrantID,
+		token.ClientID,
+		token.UserID,
+		token.Resource,
+		strings.Join(token.Scopes, " "),
+		token.ExpiresAt.UTC(),
+		token.ReplacedByID,
+	)
+	return err
+}
+
+func (r Repositories) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (refreshtoken.RefreshToken, error) {
+	row := r.DB.QueryRowContext(ctx, `
+		SELECT id, token_hash, grant_id, client_id, user_id, resource, scope,
+		       expires_at, used_at, revoked_at, replaced_by_id, created_at
+		FROM oauth_refresh_tokens
+		WHERE token_hash = ?`, tokenHash)
+	var (
+		out       refreshtoken.RefreshToken
+		scope     string
+		expiresAt time.Time
+		usedAt    sql.NullTime
+		revokedAt sql.NullTime
+		createdAt time.Time
+	)
+	if err := row.Scan(
+		&out.ID,
+		&out.TokenHash,
+		&out.GrantID,
+		&out.ClientID,
+		&out.UserID,
+		&out.Resource,
+		&scope,
+		&expiresAt,
+		&usedAt,
+		&revokedAt,
+		&out.ReplacedByID,
+		&createdAt,
+	); err != nil {
+		return refreshtoken.RefreshToken{}, err
+	}
+	out.Scopes = strings.Fields(scope)
+	out.ExpiresAt = expiresAt.UTC()
+	out.CreatedAt = createdAt.UTC()
+	if usedAt.Valid {
+		t := usedAt.Time.UTC()
+		out.UsedAt = &t
+	}
+	if revokedAt.Valid {
+		t := revokedAt.Time.UTC()
+		out.RevokedAt = &t
+	}
+	return out, nil
+}
+
+func (r Repositories) RotateRefreshToken(ctx context.Context, oldHash string, next refreshtoken.RefreshToken, usedAt time.Time) error {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO oauth_refresh_tokens (
+			id, token_hash, grant_id, client_id, user_id, resource, scope,
+			expires_at, used_at, revoked_at, replaced_by_id
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '')`,
+		next.ID,
+		next.TokenHash,
+		next.GrantID,
+		next.ClientID,
+		next.UserID,
+		next.Resource,
+		strings.Join(next.Scopes, " "),
+		next.ExpiresAt.UTC(),
+	); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE oauth_refresh_tokens
+		SET used_at = ?, replaced_by_id = ?
+		WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL`,
+		usedAt.UTC(),
+		next.ID,
+		oldHash,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
+func (r Repositories) RevokeRefreshTokensByGrant(ctx context.Context, grantID string, revokedAt time.Time) error {
+	_, err := r.DB.ExecContext(ctx, `
+		UPDATE oauth_refresh_tokens
+		SET revoked_at = ?
+		WHERE grant_id = ? AND revoked_at IS NULL`,
+		revokedAt.UTC(),
+		grantID,
 	)
 	return err
 }

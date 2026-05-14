@@ -4,10 +4,14 @@ import (
 	"context"
 	"time"
 
+	"github.com/joey/lumen-oauth/internal/domain/authcode"
 	"github.com/joey/lumen-oauth/internal/domain/client"
+	"github.com/joey/lumen-oauth/internal/domain/grant"
 	"github.com/joey/lumen-oauth/internal/domain/invite"
+	"github.com/joey/lumen-oauth/internal/domain/refreshtoken"
 	"github.com/joey/lumen-oauth/internal/domain/role"
 	"github.com/joey/lumen-oauth/internal/domain/token"
+	"github.com/joey/lumen-oauth/internal/domain/user"
 )
 
 type Clock interface {
@@ -22,8 +26,24 @@ type TokenSigner interface {
 	SignAccessToken(ctx context.Context, claims AccessTokenClaims) (token.AccessToken, error)
 }
 
+type TokenVerifier interface {
+	VerifyAccessToken(ctx context.Context, bearer string) (AccessTokenClaims, error)
+}
+
+type PasswordHasher interface {
+	Hash(password string) (string, error)
+	Verify(password, encodedHash string) (bool, error)
+}
+
 type JWKSProvider interface {
 	PublicJWKS(ctx context.Context) (map[string]any, error)
+}
+
+type UserRepository interface {
+	GetUserByID(ctx context.Context, id string) (user.User, error)
+	GetUserByEmail(ctx context.Context, email string) (user.User, error)
+	SaveUser(ctx context.Context, in user.User) error
+	UpdateUserLastLogin(ctx context.Context, id string, at time.Time) error
 }
 
 type ClientRepository interface {
@@ -33,6 +53,24 @@ type ClientRepository interface {
 
 type RedirectURIValidator interface {
 	Validate(ctx context.Context, raw string) (string, error)
+}
+
+type AuthorizationCodeRepository interface {
+	SaveAuthorizationCode(ctx context.Context, code authcode.AuthorizationCode) error
+	GetAuthorizationCodeByHash(ctx context.Context, codeHash string) (authcode.AuthorizationCode, error)
+	MarkAuthorizationCodeUsed(ctx context.Context, codeHash string, usedAt time.Time) error
+}
+
+type GrantRepository interface {
+	UpsertGrant(ctx context.Context, in grant.Grant) error
+	GetActiveGrant(ctx context.Context, userID, clientID, resource string) (grant.Grant, error)
+}
+
+type RefreshTokenRepository interface {
+	SaveRefreshToken(ctx context.Context, token refreshtoken.RefreshToken) error
+	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (refreshtoken.RefreshToken, error)
+	RotateRefreshToken(ctx context.Context, oldHash string, next refreshtoken.RefreshToken, usedAt time.Time) error
+	RevokeRefreshTokensByGrant(ctx context.Context, grantID string, revokedAt time.Time) error
 }
 
 type RoleRepository interface {

@@ -14,6 +14,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/infrastructure/clock"
 	"github.com/joey/lumen-oauth/internal/infrastructure/idgen"
 	"github.com/joey/lumen-oauth/internal/infrastructure/jwt"
+	"github.com/joey/lumen-oauth/internal/infrastructure/password"
 	"github.com/joey/lumen-oauth/internal/infrastructure/redirect"
 	"github.com/joey/lumen-oauth/internal/infrastructure/sqlite"
 	"github.com/joey/lumen-oauth/internal/interfaces/http/routes"
@@ -36,15 +37,34 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	passwordHasher := password.PBKDF2SHA256{}
 	authSvc := auth.Service{
-		Clients:  repos,
-		Roles:    repos,
-		Signer:   jwt.Signer{SigningKey: cfg.OAuth.SigningKey},
-		Clock:    clock.SystemClock{},
-		IDGen:    idgen.RandomID{},
-		Issuer:   cfg.OAuth.Issuer,
-		Audience: cfg.OAuth.Audience,
-		TTL:      maxDuration(cfg.OAuth.AccessTokenTTL, 15*time.Minute),
+		Clients:    repos,
+		Users:      repos,
+		AuthCodes:  repos,
+		Grants:     repos,
+		Refreshes:  repos,
+		Roles:      repos,
+		Signer:     jwt.Signer{SigningKey: cfg.OAuth.SigningKey},
+		Verifier:   jwt.Verifier{SigningKey: cfg.OAuth.SigningKey},
+		Passwords:  passwordHasher,
+		Clock:      clock.SystemClock{},
+		IDGen:      idgen.RandomID{},
+		Issuer:     cfg.OAuth.Issuer,
+		Audience:   cfg.OAuth.Audience,
+		TTL:        maxDuration(cfg.OAuth.AccessTokenTTL, 15*time.Minute),
+		CodeTTL:    maxDuration(cfg.OAuth.AuthorizationCodeTTL, 5*time.Minute),
+		RefreshTTL: maxDuration(cfg.OAuth.RefreshTokenTTL, 30*24*time.Hour),
+	}
+	if err := authSvc.EnsureBootstrapAdmin(context.Background(), auth.BootstrapAdminCommand{
+		Enabled:             cfg.BootstrapAdmin.Enabled,
+		Email:               cfg.BootstrapAdmin.Email,
+		Password:            cfg.BootstrapAdmin.Password,
+		Name:                cfg.BootstrapAdmin.Name,
+		ForceChangePassword: cfg.BootstrapAdmin.ForceChangePassword,
+	}); err != nil {
+		_ = repos.Close()
+		return nil, err
 	}
 	dcrSvc := dcr.Service{
 		Clients: repos,
