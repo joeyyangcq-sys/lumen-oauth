@@ -31,6 +31,10 @@ type ClientRepository interface {
 	Save(ctx context.Context, in client.OAuthClient) error
 }
 
+type RedirectURIValidator interface {
+	Validate(ctx context.Context, raw string) (string, error)
+}
+
 type RoleRepository interface {
 	ListForSubject(ctx context.Context, subject string) ([]role.Role, error)
 	ListRoles(ctx context.Context) ([]role.Role, error)

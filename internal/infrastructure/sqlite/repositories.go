@@ -61,8 +61,15 @@ func (r Repositories) initSchema(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			secret_sha256 TEXT NOT NULL,
+			redirect_uris TEXT NOT NULL DEFAULT '',
 			grant_types TEXT NOT NULL DEFAULT '',
+			response_types TEXT NOT NULL DEFAULT '',
 			scopes TEXT NOT NULL DEFAULT '',
+			token_endpoint_auth_method TEXT NOT NULL DEFAULT 'client_secret_post',
+			trust_level TEXT NOT NULL DEFAULT 'unknown_dcr',
+			client_id_issued_at INTEGER NOT NULL DEFAULT 0,
+			client_secret_expires_at INTEGER NOT NULL DEFAULT 0,
+			blocked_at TIMESTAMP NULL,
 			disabled INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -102,7 +109,60 @@ func (r Repositories) initSchema(ctx context.Context) error {
 			return err
 		}
 	}
+	return r.ensureOAuthClientColumns(ctx)
+}
+
+func (r Repositories) ensureOAuthClientColumns(ctx context.Context) error {
+	existing, err := r.tableColumns(ctx, "oauth_clients")
+	if err != nil {
+		return err
+	}
+	columns := map[string]string{
+		"redirect_uris":              "ALTER TABLE oauth_clients ADD COLUMN redirect_uris TEXT NOT NULL DEFAULT ''",
+		"response_types":             "ALTER TABLE oauth_clients ADD COLUMN response_types TEXT NOT NULL DEFAULT ''",
+		"token_endpoint_auth_method": "ALTER TABLE oauth_clients ADD COLUMN token_endpoint_auth_method TEXT NOT NULL DEFAULT 'client_secret_post'",
+		"trust_level":                "ALTER TABLE oauth_clients ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'unknown_dcr'",
+		"client_id_issued_at":        "ALTER TABLE oauth_clients ADD COLUMN client_id_issued_at INTEGER NOT NULL DEFAULT 0",
+		"client_secret_expires_at":   "ALTER TABLE oauth_clients ADD COLUMN client_secret_expires_at INTEGER NOT NULL DEFAULT 0",
+		"blocked_at":                 "ALTER TABLE oauth_clients ADD COLUMN blocked_at TIMESTAMP NULL",
+	}
+	for name, stmt := range columns {
+		if existing[name] {
+			continue
+		}
+		if _, err := r.DB.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (r Repositories) tableColumns(ctx context.Context, table string) (map[string]bool, error) {
+	rows, err := r.DB.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (r Repositories) seedLocalDevData(ctx context.Context) error {
@@ -153,25 +213,54 @@ func (r Repositories) seedLocalDevData(ctx context.Context) error {
 }
 
 func (r Repositories) GetByID(ctx context.Context, clientID string) (client.OAuthClient, error) {
-	row := r.DB.QueryRowContext(ctx, `SELECT id, name, secret_sha256, grant_types, scopes, disabled FROM oauth_clients WHERE id = ?`, clientID)
+	row := r.DB.QueryRowContext(ctx, `
+		SELECT id, name, secret_sha256, redirect_uris, grant_types, response_types, scopes,
+		       token_endpoint_auth_method, trust_level, client_id_issued_at, client_secret_expires_at, disabled
+		FROM oauth_clients
+		WHERE id = ?`, clientID)
 	var (
-		id         string
-		name       string
-		secretHash string
-		grantTypes string
-		scopes     string
-		disabled   int
+		id                      string
+		name                    string
+		secretHash              string
+		redirectURIs            string
+		grantTypes              string
+		responseTypes           string
+		scopes                  string
+		tokenEndpointAuthMethod string
+		trustLevel              string
+		clientIDIssuedAt        int64
+		clientSecretExpiresAt   int64
+		disabled                int
 	)
-	if err := row.Scan(&id, &name, &secretHash, &grantTypes, &scopes, &disabled); err != nil {
+	if err := row.Scan(
+		&id,
+		&name,
+		&secretHash,
+		&redirectURIs,
+		&grantTypes,
+		&responseTypes,
+		&scopes,
+		&tokenEndpointAuthMethod,
+		&trustLevel,
+		&clientIDIssuedAt,
+		&clientSecretExpiresAt,
+		&disabled,
+	); err != nil {
 		return client.OAuthClient{}, err
 	}
 	return client.OAuthClient{
-		ID:                 id,
-		Name:               name,
-		ClientSecretSHA256: secretHash,
-		GrantTypes:         splitCommaList(grantTypes),
-		Scopes:             splitCommaList(scopes),
-		Disabled:           disabled == 1,
+		ID:                      id,
+		Name:                    name,
+		ClientSecretSHA256:      secretHash,
+		RedirectURIs:            splitCommaList(redirectURIs),
+		GrantTypes:              splitCommaList(grantTypes),
+		ResponseTypes:           splitCommaList(responseTypes),
+		Scopes:                  splitCommaList(scopes),
+		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
+		TrustLevel:              trustLevel,
+		ClientIDIssuedAt:        clientIDIssuedAt,
+		ClientSecretExpiresAt:   clientSecretExpiresAt,
+		Disabled:                disabled == 1,
 	}, nil
 }
 
@@ -179,24 +268,40 @@ func (r Repositories) Save(ctx context.Context, in client.OAuthClient) error {
 	if strings.TrimSpace(in.ID) == "" {
 		return errors.New("client id cannot be empty")
 	}
-	if strings.TrimSpace(in.ClientSecretSHA256) == "" {
+	if strings.TrimSpace(in.ClientSecretSHA256) == "" && strings.TrimSpace(in.TokenEndpointAuthMethod) != "none" {
 		return errors.New("client secret hash cannot be empty")
 	}
 	_, err := r.DB.ExecContext(ctx, `
-		INSERT INTO oauth_clients (id, name, secret_sha256, grant_types, scopes, disabled, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO oauth_clients (
+			id, name, secret_sha256, redirect_uris, grant_types, response_types, scopes,
+			token_endpoint_auth_method, trust_level, client_id_issued_at, client_secret_expires_at,
+			disabled, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			secret_sha256 = excluded.secret_sha256,
+			redirect_uris = excluded.redirect_uris,
 			grant_types = excluded.grant_types,
+			response_types = excluded.response_types,
 			scopes = excluded.scopes,
+			token_endpoint_auth_method = excluded.token_endpoint_auth_method,
+			trust_level = excluded.trust_level,
+			client_id_issued_at = excluded.client_id_issued_at,
+			client_secret_expires_at = excluded.client_secret_expires_at,
 			disabled = excluded.disabled,
 			updated_at = CURRENT_TIMESTAMP`,
 		in.ID,
 		in.Name,
 		in.ClientSecretSHA256,
+		strings.Join(in.RedirectURIs, ","),
 		strings.Join(in.GrantTypes, ","),
+		strings.Join(in.ResponseTypes, ","),
 		strings.Join(in.Scopes, ","),
+		defaultString(in.TokenEndpointAuthMethod, "client_secret_post"),
+		defaultString(in.TrustLevel, "unknown_dcr"),
+		in.ClientIDIssuedAt,
+		in.ClientSecretExpiresAt,
 		boolToInt(in.Disabled),
 	)
 	return err
@@ -422,6 +527,13 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func marshalDetails(details map[string]any) (string, error) {

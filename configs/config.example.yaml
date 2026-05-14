@@ -17,11 +17,52 @@ oauth:
     - lumen-mcp
   signing_key: change-me
   access_token_ttl: 15m
+  refresh_token_ttl: 720h
+  authorization_code_ttl: 5m
+  supported_scopes:
+    - openid
+    - profile
+    - email
+    - mcp:tools
+    - mcp:read
+    - mcp:write
+    - offline_access
+    - routes:read
+    - routes:write
+    - services:read
+    - services:write
+    - upstreams:read
+    - upstreams:write
+    - plugins:read
+    - plugins:write
+    - global_rules:read
+    - global_rules:write
+    - gateway:read
+    - gateway:write
+    - gateway:dangerous
+    - oauth:read
+    - oauth:write
+    - admin
+    - admin:dangerous
 
 dcr:
-  iat_required: true
+  enabled: true
+  mode: guarded
+  iat_required: false
   initial_access_tokens:
     - local-dev-iat
+  default_trust_level: unknown_dcr
+  unknown_client_allowed_scopes:
+    - mcp:tools
+    - offline_access
+  allowed_redirects:
+    loopback_enabled: true
+    loopback_paths:
+      - /callback
+    custom_schemes:
+      - cursor://anysphere.cursor-mcp/oauth/callback
+    hosted_https:
+      - https://claude.ai/api/mcp/auth_callback
 
 invite:
   ttl: 24h

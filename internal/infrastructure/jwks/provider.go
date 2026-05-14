@@ -1,15 +1,28 @@
 package jwks
 
-import "context"
+import (
+	"context"
+	"encoding/base64"
+)
 
 type Provider struct {
-	Issuer string
+	Issuer     string
+	SigningKey string
 }
 
 func (p Provider) PublicJWKS(_ context.Context) (map[string]any, error) {
-	// TODO: expose real signing public keys with kid/alg metadata.
+	keys := []any{}
+	if p.SigningKey != "" {
+		keys = append(keys, map[string]any{
+			"kty": "oct",
+			"kid": "default",
+			"alg": "HS256",
+			"use": "sig",
+			"k":   base64.RawURLEncoding.EncodeToString([]byte(p.SigningKey)),
+		})
+	}
 	return map[string]any{
 		"issuer": p.Issuer,
-		"keys":   []any{},
+		"keys":   keys,
 	}, nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/infrastructure/clock"
 	"github.com/joey/lumen-oauth/internal/infrastructure/idgen"
 	"github.com/joey/lumen-oauth/internal/infrastructure/jwt"
+	"github.com/joey/lumen-oauth/internal/infrastructure/redirect"
 	"github.com/joey/lumen-oauth/internal/infrastructure/sqlite"
 	"github.com/joey/lumen-oauth/internal/interfaces/http/routes"
 	"github.com/joey/lumen-oauth/internal/platform/logging"
@@ -46,10 +47,21 @@ func New(cfg config.Config) (*App, error) {
 		TTL:      maxDuration(cfg.OAuth.AccessTokenTTL, 15*time.Minute),
 	}
 	dcrSvc := dcr.Service{
-		Clients:             repos,
+		Clients: repos,
+		Redirects: redirect.Validator{Config: redirect.Config{
+			LoopbackEnabled: cfg.DCR.AllowedRedirects.LoopbackEnabled,
+			LoopbackPaths:   cfg.DCR.AllowedRedirects.LoopbackPaths,
+			CustomSchemes:   cfg.DCR.AllowedRedirects.CustomSchemes,
+			HostedHTTPS:     cfg.DCR.AllowedRedirects.HostedHTTPS,
+		}},
 		IDGen:               idgen.RandomID{},
+		Clock:               clock.SystemClock{},
+		Enabled:             cfg.DCR.Enabled,
+		Mode:                cfg.DCR.Mode,
 		IATRequired:         cfg.DCR.IATRequired,
 		InitialAccessTokens: cfg.DCR.InitialAccessTokens,
+		SupportedScopes:     cfg.OAuth.SupportedScopes,
+		DefaultTrustLevel:   cfg.DCR.DefaultTrustLevel,
 	}
 	rbacSvc := rbac.Service{Roles: repos}
 	inviteSvc := inviteuc.Service{

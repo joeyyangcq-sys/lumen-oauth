@@ -35,10 +35,36 @@ func TestOIDCDiscoveryContract(t *testing.T) {
 	assertStringField(t, body, "issuer", "http://127.0.0.1:9080")
 	assertStringField(t, body, "jwks_uri", "http://127.0.0.1:9080/.well-known/jwks.json")
 	assertStringField(t, body, "token_endpoint", "http://127.0.0.1:9080/oauth/token")
-	assertStringField(t, body, "registration_endpoint", "http://127.0.0.1:9080/connect/register")
+	assertStringField(t, body, "registration_endpoint", "http://127.0.0.1:9080/oauth/register")
 	assertNonEmptyArray(t, body, "scopes_supported")
 	assertNonEmptyArray(t, body, "grant_types_supported")
 	assertNonEmptyArray(t, body, "response_types_supported")
+	assertNonEmptyArray(t, body, "code_challenge_methods_supported")
+}
+
+func TestOAuthAuthorizationServerMetadataContract(t *testing.T) {
+	cfg := testConfig("http://127.0.0.1:9080")
+	h := New(cfg, logging.New("error", "json"), nil, auth.Service{}, dcr.Service{}, inviteuc.Service{}, rbac.Service{})
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	assertStringField(t, body, "issuer", "http://127.0.0.1:9080")
+	assertStringField(t, body, "authorization_endpoint", "http://127.0.0.1:9080/oauth/authorize")
+	assertStringField(t, body, "token_endpoint", "http://127.0.0.1:9080/oauth/token")
+	assertStringField(t, body, "registration_endpoint", "http://127.0.0.1:9080/oauth/register")
+	assertStringField(t, body, "jwks_uri", "http://127.0.0.1:9080/oauth/jwks.json")
+	assertNonEmptyArray(t, body, "code_challenge_methods_supported")
+	assertNonEmptyArray(t, body, "token_endpoint_auth_methods_supported")
 }
 
 func TestJWKSContract(t *testing.T) {

@@ -25,7 +25,7 @@ func New(
 	inviteSvc invite.Service,
 	rbacSvc rbac.Service,
 ) http.Handler {
-	o := handlers.OIDCHandler{Config: cfg, JWKSProvider: jwks.Provider{Issuer: cfg.OAuth.Issuer}}
+	o := handlers.OIDCHandler{Config: cfg, JWKSProvider: jwks.Provider{Issuer: cfg.OAuth.Issuer, SigningKey: cfg.OAuth.SigningKey}}
 	tokenHandler := handlers.TokenHandler{
 		AuthService: authSvc,
 	}
@@ -35,9 +35,12 @@ func New(
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handlers.Healthz)
+	mux.HandleFunc("/.well-known/oauth-authorization-server", o.OAuthAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/openid-configuration", o.Discovery)
 	mux.HandleFunc("/.well-known/jwks.json", o.JWKS)
+	mux.HandleFunc("/oauth/jwks.json", o.JWKS)
 	mux.HandleFunc("/oauth/token", tokenHandler.Token)
+	mux.HandleFunc("/oauth/register", dcrHandler.RegisterClient)
 	mux.HandleFunc("/connect/register", dcrHandler.RegisterClient)
 	mux.HandleFunc("/auth/invitations", inviteHandler.CreateInvitation)
 	mux.HandleFunc("/auth/register/accept", inviteHandler.AcceptInvitation)
