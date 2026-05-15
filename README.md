@@ -342,7 +342,58 @@ bootstrap_admin:
 
 ---
 
-## 8. 代码结构
+## 8. 构建与部署
+
+### 8.1 单独运行
+
+```bash
+# 依赖 PostgreSQL 或 SQLite
+go run ./cmd/lumen-oauth --config configs/config.yaml
+```
+
+### 8.2 全栈部署（Docker Compose 一键启动）
+
+Lumen OAuth 是 Lumen 全栈平台的一部分。使用根目录的 `docker-compose.yml` 可一键启动所有 8 个服务：
+
+```bash
+cd api-gateway
+docker compose up -d --build
+```
+
+**启动顺序**：`etcd` + `PostgreSQL` → `Gateway` → `OAuth` → `MCP Server` + `Prometheus` → `Grafana` → `Admin UI`
+
+启动后验证 OAuth 服务：
+
+```bash
+# 健康检查
+curl http://localhost:9080/healthz
+# {"status":"ok"}
+
+# OIDC 发现
+curl http://localhost:9080/.well-known/openid-configuration
+
+# 默认管理员登录
+curl -X POST http://localhost:9080/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"admin"}'
+```
+
+**全栈端口一览**：
+
+| 服务 | 端口 | 地址 |
+|------|------|------|
+| Gateway | 18080 | http://localhost:18080 |
+| OAuth | 9080 | http://localhost:9080 |
+| MCP Server | 9280 | http://localhost:9280 |
+| Admin UI | 5173 | http://localhost:5173 |
+| Grafana | 3000 | http://localhost:3000 |
+| Prometheus | 9090 | http://localhost:9090 |
+| etcd | 2379 | http://localhost:2379 |
+| PostgreSQL | 5432 | localhost:5432 |
+
+---
+
+## 9. 代码结构
 
 ```
 cmd/lumen-oauth/              入口
@@ -385,7 +436,7 @@ internal/
 
 ---
 
-## 9. 关键安全决策
+## 10. 关键安全决策
 
 | 决策 | 理由 |
 |------|------|
@@ -401,7 +452,7 @@ internal/
 
 ---
 
-## 10. 未来规划
+## 11. 未来规划
 
 | 方向 | 计划 |
 |------|------|
