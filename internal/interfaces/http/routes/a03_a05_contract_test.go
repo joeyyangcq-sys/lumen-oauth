@@ -18,6 +18,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/infrastructure/clock"
 	"github.com/joey/lumen-oauth/internal/infrastructure/idgen"
 	"github.com/joey/lumen-oauth/internal/infrastructure/jwt"
+	"github.com/joey/lumen-oauth/internal/infrastructure/password"
 	"github.com/joey/lumen-oauth/internal/infrastructure/sqlite"
 	"github.com/joey/lumen-oauth/internal/platform/logging"
 	"github.com/joey/lumen-oauth/internal/platform/observability"
@@ -26,6 +27,7 @@ import (
 func TestDCRIATInviteAndRBACContract(t *testing.T) {
 	handler, cleanup := newTestHandler(t)
 	defer cleanup()
+	adminBearer := mustLoginAdminBearer(t, handler)
 
 	// A-03: DCR requires IAT (no IAT -> 401)
 	{
@@ -81,6 +83,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/admin/roles", bytes.NewBufferString(`{"role_name":"qa-role","scopes":["routes:read"]}`))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("upsert role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
@@ -92,6 +95,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/admin/role-bindings", bytes.NewReader(raw))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("bind role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
@@ -120,6 +124,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/auth/invitations", bytes.NewBufferString(`{"email":"new.user@example.com","role":"qa-role"}`))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("create invite status=%d, want 201, body=%s", rec.Code, rec.Body.String())
@@ -148,6 +153,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/admin/roles", bytes.NewBufferString(`{"role_name":"qa-temp-role","scopes":["routes:read"]}`))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("upsert temp role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
@@ -159,6 +165,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/admin/role-bindings", bytes.NewReader(raw))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("bind temp role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
@@ -168,6 +175,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/admin/roles/delete", bytes.NewBufferString(`{"role_name":"qa-temp-role"}`))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("delete bound role status=%d, want 400, body=%s", rec.Code, rec.Body.String())
@@ -179,6 +187,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/admin/role-bindings/unbind", bytes.NewReader(raw))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unbind role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
@@ -188,6 +197,7 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/admin/roles/delete", bytes.NewBufferString(`{"role_name":"qa-temp-role"}`))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", adminBearer)
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("delete unbound role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
@@ -227,14 +237,30 @@ func newTestHandler(t *testing.T) (http.Handler, func()) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	authSvc := auth.Service{
-		Clients:  repos,
-		Roles:    repos,
-		Signer:   jwt.Signer{SigningKey: cfg.OAuth.SigningKey},
-		Clock:    clock.SystemClock{},
-		IDGen:    idgen.RandomID{},
-		Issuer:   cfg.OAuth.Issuer,
-		Audience: cfg.OAuth.Audience,
-		TTL:      cfg.OAuth.AccessTokenTTL,
+		Clients:   repos,
+		Users:     repos,
+		AuthCodes: repos,
+		Grants:    repos,
+		Refreshes: repos,
+		Sessions:  repos,
+		Roles:     repos,
+		Signer:    jwt.Signer{SigningKey: cfg.OAuth.SigningKey},
+		Verifier:  jwt.Verifier{SigningKey: cfg.OAuth.SigningKey},
+		Passwords: password.PBKDF2SHA256{},
+		Clock:     clock.SystemClock{},
+		IDGen:     idgen.RandomID{},
+		Issuer:    cfg.OAuth.Issuer,
+		Audience:  cfg.OAuth.Audience,
+		TTL:       cfg.OAuth.AccessTokenTTL,
+	}
+	if err := authSvc.EnsureBootstrapAdmin(t.Context(), auth.BootstrapAdminCommand{
+		Enabled:             true,
+		Email:               "admin@example.com",
+		Password:            "admin",
+		Name:                "Default Admin",
+		ForceChangePassword: true,
+	}); err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
 	}
 	dcrSvc := dcr.Service{
 		Clients:             repos,
@@ -253,4 +279,26 @@ func newTestHandler(t *testing.T) (http.Handler, func()) {
 
 	h := New(cfg, logging.New("error", "json"), observability.NewHTTPMetrics(), authSvc, dcrSvc, inviteSvc, rbacSvc, nil)
 	return h, func() { _ = repos.Close() }
+}
+
+func mustLoginAdminBearer(t *testing.T, handler http.Handler) string {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(`{"email":"admin@example.com","password":"admin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin login status=%d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	if body.AccessToken == "" {
+		t.Fatalf("empty access_token in login response: %s", rec.Body.String())
+	}
+	return "Bearer " + body.AccessToken
 }

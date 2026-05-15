@@ -5,16 +5,21 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/joey/lumen-oauth/internal/application/auth"
 	"github.com/joey/lumen-oauth/internal/application/invite"
 )
 
 type InviteHandler struct {
-	Service invite.Service
+	AuthService auth.Service
+	Service     invite.Service
 }
 
 func (h InviteHandler) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
+		return
+	}
+	if _, ok := requireAdmin(w, r, h.AuthService); !ok {
 		return
 	}
 	var req struct {

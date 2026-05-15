@@ -5,16 +5,21 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/joey/lumen-oauth/internal/application/auth"
 	"github.com/joey/lumen-oauth/internal/application/rbac"
 )
 
 type AdminHandler struct {
-	RBAC rbac.Service
+	AuthService auth.Service
+	RBAC        rbac.Service
 }
 
 func (h AdminHandler) ListRoles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required", nil)
+		return
+	}
+	if _, ok := requireAdmin(w, r, h.AuthService); !ok {
 		return
 	}
 	roles, err := h.RBAC.ListRoles(r.Context())
@@ -29,6 +34,9 @@ func (h AdminHandler) ListRoles(w http.ResponseWriter, r *http.Request) {
 func (h AdminHandler) UpsertRole(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
+		return
+	}
+	if _, ok := requireAdmin(w, r, h.AuthService); !ok {
 		return
 	}
 	var req struct {
@@ -50,6 +58,9 @@ func (h AdminHandler) UpsertRole(w http.ResponseWriter, r *http.Request) {
 func (h AdminHandler) BindRole(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
+		return
+	}
+	if _, ok := requireAdmin(w, r, h.AuthService); !ok {
 		return
 	}
 	var req struct {
@@ -79,6 +90,9 @@ func (h AdminHandler) UnbindRole(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
 		return
 	}
+	if _, ok := requireAdmin(w, r, h.AuthService); !ok {
+		return
+	}
 	var req struct {
 		Subject  string `json:"subject"`
 		RoleName string `json:"role_name"`
@@ -104,6 +118,9 @@ func (h AdminHandler) UnbindRole(w http.ResponseWriter, r *http.Request) {
 func (h AdminHandler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
+		return
+	}
+	if _, ok := requireAdmin(w, r, h.AuthService); !ok {
 		return
 	}
 	var req struct {

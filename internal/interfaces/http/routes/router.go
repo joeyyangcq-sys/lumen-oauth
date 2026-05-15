@@ -38,8 +38,8 @@ func New(
 	}
 	authHandler := handlers.AuthHandler{Service: authSvc}
 	dcrHandler := handlers.DCRHandler{Service: dcrSvc}
-	inviteHandler := handlers.InviteHandler{Service: inviteSvc}
-	adminHandler := handlers.AdminHandler{RBAC: rbacSvc}
+	inviteHandler := handlers.InviteHandler{AuthService: authSvc, Service: inviteSvc}
+	adminHandler := handlers.AdminHandler{AuthService: authSvc, RBAC: rbacSvc}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handlers.Healthz)
