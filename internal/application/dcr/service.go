@@ -261,15 +261,20 @@ func validResponseTypes(in []string) bool {
 }
 
 func normalizeScopesAgainst(in, supported []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
 	supportedSet := make(map[string]struct{}, len(supported))
 	for _, scope := range supported {
 		scope = strings.TrimSpace(scope)
 		if scope != "" {
 			supportedSet[scope] = struct{}{}
 		}
+	}
+	if len(in) == 0 {
+		out := make([]string, 0, len(supportedSet))
+		for scope := range supportedSet {
+			out = append(out, scope)
+		}
+		slices.Sort(out)
+		return out
 	}
 	set := make(map[string]struct{}, len(in))
 	for _, s := range in {

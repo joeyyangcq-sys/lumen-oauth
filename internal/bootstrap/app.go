@@ -11,8 +11,10 @@ import (
 	"github.com/joey/lumen-oauth/internal/application/dcr"
 	inviteuc "github.com/joey/lumen-oauth/internal/application/invite"
 	"github.com/joey/lumen-oauth/internal/application/rbac"
+	"github.com/joey/lumen-oauth/internal/application/registration"
 	"github.com/joey/lumen-oauth/internal/config"
 	"github.com/joey/lumen-oauth/internal/infrastructure/clock"
+	"github.com/joey/lumen-oauth/internal/infrastructure/email"
 	"github.com/joey/lumen-oauth/internal/infrastructure/idgen"
 	"github.com/joey/lumen-oauth/internal/infrastructure/jwt"
 	"github.com/joey/lumen-oauth/internal/infrastructure/password"
@@ -83,7 +85,7 @@ func New(cfg config.Config) (*App, error) {
 		Mode:                cfg.DCR.Mode,
 		IATRequired:         cfg.DCR.IATRequired,
 		InitialAccessTokens: cfg.DCR.InitialAccessTokens,
-		SupportedScopes:     cfg.OAuth.SupportedScopes,
+		SupportedScopes:     cfg.DCR.UnknownClientAllowedScopes,
 		DefaultTrustLevel:   cfg.DCR.DefaultTrustLevel,
 	}
 	rbacSvc := rbac.Service{Roles: repos}
@@ -95,7 +97,41 @@ func New(cfg config.Config) (*App, error) {
 		InviteTTL: cfg.Invite.TTL,
 	}
 
-	handler := routes.New(cfg, log, metrics, authSvc, dcrSvc, inviteSvc, rbacSvc)
+	var regSvc *registration.Service
+	if cfg.Registration.Enabled {
+		var emailSender email.ConsoleSender
+		if cfg.SMTP.Host != "" {
+			_ = email.SMTPSender{
+				Host:     cfg.SMTP.Host,
+				Port:     cfg.SMTP.Port,
+				Username: cfg.SMTP.Username,
+				Password: cfg.SMTP.Password,
+				From:     cfg.SMTP.From,
+			}
+		}
+		svc := registration.Service{
+			Users:         repos,
+			Verifications: sqlite.VerificationAdapter{Repos: repos},
+			Passwords:     passwordHasher,
+			IDGen:         idgen.RandomID{},
+			Clock:         clock.SystemClock{},
+			DevMode:       cfg.SMTP.Host == "",
+		}
+		if cfg.SMTP.Host != "" {
+			svc.Email = email.SMTPSender{
+				Host:     cfg.SMTP.Host,
+				Port:     cfg.SMTP.Port,
+				Username: cfg.SMTP.Username,
+				Password: cfg.SMTP.Password,
+				From:     cfg.SMTP.From,
+			}
+		} else {
+			svc.Email = emailSender
+		}
+		regSvc = &svc
+	}
+
+	handler := routes.New(cfg, log, metrics, authSvc, dcrSvc, inviteSvc, rbacSvc, regSvc)
 	return &App{
 		Config:       cfg,
 		Logger:       log,

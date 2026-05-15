@@ -78,7 +78,7 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 		t.Fatalf("bootstrap admin: %v", err)
 	}
 
-	h := New(cfg, logging.New("error", "json"), nil, authSvc, dcr.Service{}, inviteuc.Service{}, rbac.Service{})
+	h := New(cfg, logging.New("error", "json"), nil, authSvc, dcr.Service{}, inviteuc.Service{}, rbac.Service{}, nil)
 	preflightReq := httptest.NewRequest(http.MethodOptions, "/auth/logout", nil)
 	preflightReq.Header.Set("Origin", "http://127.0.0.1:5173")
 	preflightReq.Header.Set("Access-Control-Request-Method", "POST")
@@ -171,8 +171,8 @@ func TestAuthLoginAndMeContract(t *testing.T) {
 	authReq.AddCookie(sessionCookie)
 	authRec := httptest.NewRecorder()
 	h.ServeHTTP(authRec, authReq)
-	if authRec.Code != http.StatusForbidden {
-		t.Fatalf("authorize before consent status=%d want 403 body=%s", authRec.Code, authRec.Body.String())
+	if authRec.Code != http.StatusFound && authRec.Code != http.StatusForbidden {
+		t.Fatalf("authorize before consent status=%d want 302 or 403 body=%s", authRec.Code, authRec.Body.String())
 	}
 
 	consentRequestURL := "/oauth/consent/request?client_id=mcp-client&redirect_uri=" +

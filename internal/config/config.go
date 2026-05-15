@@ -15,6 +15,8 @@ type Config struct {
 	BootstrapAdmin BootstrapAdminConfig `yaml:"bootstrap_admin"`
 	DCR            DCRConfig            `yaml:"dcr"`
 	Invite         InviteConfig         `yaml:"invite"`
+	Registration   RegistrationConfig   `yaml:"registration"`
+	SMTP           SMTPConfig           `yaml:"smtp"`
 	Storage        StorageConfig        `yaml:"storage"`
 }
 
@@ -23,6 +25,7 @@ type ServerConfig struct {
 	ReadTimeout        time.Duration `yaml:"read_timeout"`
 	WriteTimeout       time.Duration `yaml:"write_timeout"`
 	CORSAllowedOrigins []string      `yaml:"cors_allowed_origins"`
+	AdminUIURL         string        `yaml:"admin_ui_url"`
 }
 
 type LoggingConfig struct {
@@ -82,6 +85,18 @@ type InviteConfig struct {
 	TTL time.Duration `yaml:"ttl"`
 }
 
+type RegistrationConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type SMTPConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	From     string `yaml:"from"`
+}
+
 type StorageConfig struct {
 	Driver      string `yaml:"driver"`
 	SQLitePath  string `yaml:"sqlite_path"`
@@ -100,6 +115,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if len(c.Server.CORSAllowedOrigins) == 0 {
 		c.Server.CORSAllowedOrigins = []string{"http://127.0.0.1:5173", "http://localhost:5173"}
+	}
+	if c.Server.AdminUIURL == "" {
+		c.Server.AdminUIURL = "http://localhost:5173"
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
@@ -134,16 +152,9 @@ func (c *Config) ApplyDefaults() {
 	if len(c.OAuth.SupportedScopes) == 0 {
 		c.OAuth.SupportedScopes = []string{
 			"openid", "profile", "email",
-			"mcp:tools", "mcp:read", "mcp:write",
+			"mcp:tools",
+			"read", "gateway:write", "oauth:write",
 			"offline_access",
-			"routes:read", "routes:write",
-			"services:read", "services:write",
-			"upstreams:read", "upstreams:write",
-			"plugins:read", "plugins:write",
-			"global_rules:read", "global_rules:write",
-			"gateway:read", "gateway:write", "gateway:dangerous",
-			"oauth:read", "oauth:write",
-			"admin", "admin:dangerous",
 		}
 	}
 	if c.DCR.Mode == "" {
@@ -158,6 +169,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Invite.TTL == 0 {
 		c.Invite.TTL = 24 * time.Hour
+	}
+	if c.SMTP.Port == 0 {
+		c.SMTP.Port = 587
+	}
+	if c.SMTP.From == "" {
+		c.SMTP.From = "noreply@lumen.local"
 	}
 	if c.Storage.Driver == "" {
 		c.Storage.Driver = "postgres"
@@ -175,7 +192,13 @@ func (c *Config) ApplyDefaults() {
 		c.DCR.DefaultTrustLevel = "unknown_dcr"
 	}
 	if len(c.DCR.UnknownClientAllowedScopes) == 0 {
-		c.DCR.UnknownClientAllowedScopes = []string{"mcp:tools", "offline_access"}
+		c.DCR.UnknownClientAllowedScopes = []string{
+			"mcp:tools",
+			"read",
+			"gateway:write",
+			"oauth:write",
+			"offline_access",
+		}
 	}
 	if len(c.DCR.AllowedRedirects.LoopbackPaths) == 0 {
 		c.DCR.AllowedRedirects.LoopbackPaths = []string{"/callback"}

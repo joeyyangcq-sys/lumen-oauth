@@ -13,6 +13,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/domain/session"
 	"github.com/joey/lumen-oauth/internal/domain/token"
 	"github.com/joey/lumen-oauth/internal/domain/user"
+	"github.com/joey/lumen-oauth/internal/domain/verification"
 )
 
 type Clock interface {
@@ -85,12 +86,25 @@ type RoleRepository interface {
 	ListRoles(ctx context.Context) ([]role.Role, error)
 	UpsertRoleScopes(ctx context.Context, roleName string, scopes []string) error
 	BindRoleToSubject(ctx context.Context, subject, roleName string) error
+	UnbindRoleFromSubject(ctx context.Context, subject, roleName string) error
+	DeleteRole(ctx context.Context, roleName string) error
 }
 
 type InvitationRepository interface {
 	Create(ctx context.Context, in invite.Invitation) error
 	GetByCode(ctx context.Context, code string) (invite.Invitation, error)
 	MarkUsed(ctx context.Context, code string, usedAt time.Time) error
+}
+
+type EmailVerificationRepository interface {
+	Save(ctx context.Context, v verification.EmailVerification, passwordHash, name string) error
+	GetPendingByEmailAndCode(ctx context.Context, email, code string) (verification.EmailVerification, string, string, error)
+	MarkVerified(ctx context.Context, id string, at time.Time) error
+	CountPending(ctx context.Context, email string) (int, error)
+}
+
+type EmailSender interface {
+	SendVerificationCode(ctx context.Context, to, code string) error
 }
 
 type AuditSink interface {

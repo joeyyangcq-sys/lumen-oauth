@@ -27,26 +27,10 @@ oauth:
     - profile
     - email
     - mcp:tools
-    - mcp:read
-    - mcp:write
-    - offline_access
-    - routes:read
-    - routes:write
-    - services:read
-    - services:write
-    - upstreams:read
-    - upstreams:write
-    - plugins:read
-    - plugins:write
-    - global_rules:read
-    - global_rules:write
-    - gateway:read
+    - read
     - gateway:write
-    - gateway:dangerous
-    - oauth:read
     - oauth:write
-    - admin
-    - admin:dangerous
+    - offline_access
 
 auth:
   password_hash:
@@ -68,6 +52,9 @@ dcr:
   default_trust_level: unknown_dcr
   unknown_client_allowed_scopes:
     - mcp:tools
+    - read
+    - gateway:write
+    - oauth:write
     - offline_access
   allowed_redirects:
     loopback_enabled: true

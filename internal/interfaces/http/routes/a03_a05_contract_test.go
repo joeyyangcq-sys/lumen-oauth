@@ -142,6 +142,57 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 			t.Fatalf("accept invite status=%d, want 200, body=%s", rec.Code, rec.Body.String())
 		}
 	}
+
+	// RBAC minimal management: bind conflict on delete, then unbind and delete succeed.
+	{
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/admin/roles", bytes.NewBufferString(`{"role_name":"qa-temp-role","scopes":["routes:read"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("upsert temp role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	{
+		payload := map[string]string{"subject": dcrOut.ClientID, "role_name": "qa-temp-role"}
+		raw, _ := json.Marshal(payload)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/admin/role-bindings", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("bind temp role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	{
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/admin/roles/delete", bytes.NewBufferString(`{"role_name":"qa-temp-role"}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("delete bound role status=%d, want 400, body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	{
+		payload := map[string]string{"subject": dcrOut.ClientID, "role_name": "qa-temp-role"}
+		raw, _ := json.Marshal(payload)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/admin/role-bindings/unbind", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unbind role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	{
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/admin/roles/delete", bytes.NewBufferString(`{"role_name":"qa-temp-role"}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("delete unbound role status=%d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+	}
 }
 
 func newTestHandler(t *testing.T) (http.Handler, func()) {
@@ -200,6 +251,6 @@ func newTestHandler(t *testing.T) (http.Handler, func()) {
 		InviteTTL: cfg.Invite.TTL,
 	}
 
-	h := New(cfg, logging.New("error", "json"), observability.NewHTTPMetrics(), authSvc, dcrSvc, inviteSvc, rbacSvc)
+	h := New(cfg, logging.New("error", "json"), observability.NewHTTPMetrics(), authSvc, dcrSvc, inviteSvc, rbacSvc, nil)
 	return h, func() { _ = repos.Close() }
 }

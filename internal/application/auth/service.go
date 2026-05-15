@@ -436,12 +436,16 @@ func consentScopeModels(scopes []string) []ConsentScopeModel {
 			model.Label = "调用 MCP tools"
 			model.Description = "允许客户端发现并调用已授权的 MCP tools。"
 			model.Risk = "medium"
-		case "mcp:read":
-			model.Label = "读取 MCP 数据"
-			model.Description = "允许读取 MCP 资源和工具结果。"
-		case "mcp:write":
-			model.Label = "写入 MCP 数据"
-			model.Description = "允许执行会修改后端状态的 MCP 操作。"
+		case "read", "mcp:read", "routes:read", "services:read", "upstreams:read", "plugins:read", "global_rules:read", "metrics:read", "gateway:read", "oauth:read":
+			model.Label = "读取数据（GET）"
+			model.Description = "允许读取资源与查询统计，不包含写入操作。"
+		case "gateway:write", "mcp:write", "routes:write", "services:write", "upstreams:write", "plugins:write", "global_rules:write", "gateway:bundle:apply", "gateway:dangerous":
+			model.Label = "网关写入"
+			model.Description = "允许创建、更新、删除路由/服务/插件等网关配置。"
+			model.Risk = "high"
+		case "oauth:write":
+			model.Label = "OAuth 写入"
+			model.Description = "允许修改 OAuth 相关配置与授权数据。"
 			model.Risk = "high"
 		case "offline_access":
 			model.Label = "离线访问"
@@ -755,7 +759,7 @@ func grantScopes(requested, allowed []string) []string {
 func normalizeScopes(scopes []string) []string {
 	set := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
-		scope = strings.TrimSpace(scope)
+		scope = canonicalScope(strings.TrimSpace(scope))
 		if scope == "" {
 			continue
 		}
@@ -767,6 +771,17 @@ func normalizeScopes(scopes []string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func canonicalScope(scope string) string {
+	switch scope {
+	case "mcp:read", "routes:read", "services:read", "upstreams:read", "plugins:read", "global_rules:read", "metrics:read", "gateway:read", "oauth:read":
+		return "read"
+	case "mcp:write", "routes:write", "services:write", "upstreams:write", "plugins:write", "global_rules:write", "gateway:bundle:apply", "gateway:dangerous":
+		return "gateway:write"
+	default:
+		return scope
+	}
 }
 
 func contains(values []string, want string) bool {

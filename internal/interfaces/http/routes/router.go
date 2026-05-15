@@ -8,6 +8,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/application/dcr"
 	"github.com/joey/lumen-oauth/internal/application/invite"
 	"github.com/joey/lumen-oauth/internal/application/rbac"
+	"github.com/joey/lumen-oauth/internal/application/registration"
 	"github.com/joey/lumen-oauth/internal/config"
 	"github.com/joey/lumen-oauth/internal/infrastructure/jwks"
 	"github.com/joey/lumen-oauth/internal/interfaces/http/handlers"
@@ -24,12 +25,17 @@ func New(
 	dcrSvc dcr.Service,
 	inviteSvc invite.Service,
 	rbacSvc rbac.Service,
+	regSvc *registration.Service,
 ) http.Handler {
 	o := handlers.OIDCHandler{Config: cfg, JWKSProvider: jwks.Provider{Issuer: cfg.OAuth.Issuer, SigningKey: cfg.OAuth.SigningKey}}
 	tokenHandler := handlers.TokenHandler{
 		AuthService: authSvc,
 	}
-	authorizeHandler := handlers.AuthorizeHandler{AuthService: authSvc}
+	authorizeHandler := handlers.AuthorizeHandler{
+		AuthService: authSvc,
+		Issuer:      cfg.OAuth.Issuer,
+		AdminUIURL:  cfg.Server.AdminUIURL,
+	}
 	authHandler := handlers.AuthHandler{Service: authSvc}
 	dcrHandler := handlers.DCRHandler{Service: dcrSvc}
 	inviteHandler := handlers.InviteHandler{Service: inviteSvc}
@@ -52,8 +58,15 @@ func New(
 	mux.HandleFunc("/auth/me", authHandler.Me)
 	mux.HandleFunc("/auth/invitations", inviteHandler.CreateInvitation)
 	mux.HandleFunc("/auth/register/accept", inviteHandler.AcceptInvitation)
+	if regSvc != nil {
+		regHandler := handlers.RegisterHandler{Service: *regSvc}
+		mux.HandleFunc("/auth/register", regHandler.Register)
+		mux.HandleFunc("/auth/verify-email", regHandler.VerifyEmail)
+	}
 	mux.HandleFunc("/admin/roles", methodSwitch(adminHandler.ListRoles, adminHandler.UpsertRole))
+	mux.HandleFunc("/admin/roles/delete", adminHandler.DeleteRole)
 	mux.HandleFunc("/admin/role-bindings", adminHandler.BindRole)
+	mux.HandleFunc("/admin/role-bindings/unbind", adminHandler.UnbindRole)
 	mux.Handle("/debug/vars", expvar.Handler())
 
 	mws := []middleware.Middleware{

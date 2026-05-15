@@ -136,6 +136,8 @@ func (h TokenHandler) refreshToken(w http.ResponseWriter, r *http.Request) {
 
 type AuthorizeHandler struct {
 	AuthService auth.Service
+	Issuer      string
+	AdminUIURL  string
 }
 
 func (h AuthorizeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
@@ -163,14 +165,21 @@ func (h AuthorizeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrUnauthorized):
-			redirectToLogin(w, r)
+			returnTo := h.Issuer + r.URL.RequestURI()
+			loginURL := strings.TrimRight(h.AdminUIURL, "/") + "/login?return_to=" + url.QueryEscape(returnTo)
+			http.Redirect(w, r, loginURL, http.StatusFound)
 		case errors.Is(err, auth.ErrConsentRequired):
-			writeOAuthError(w, http.StatusForbidden, "consent_required", err.Error(), map[string]any{
-				"client_id":    q.Get("client_id"),
-				"redirect_uri": q.Get("redirect_uri"),
-				"resource":     q.Get("resource"),
-				"scope":        q.Get("scope"),
-			})
+			consentURL := strings.TrimRight(h.AdminUIURL, "/") + "/oauth/consent?" + url.Values{
+				"issuer":                {h.Issuer},
+				"client_id":             {q.Get("client_id")},
+				"redirect_uri":          {q.Get("redirect_uri")},
+				"scope":                 {q.Get("scope")},
+				"state":                 {q.Get("state")},
+				"resource":              {q.Get("resource")},
+				"code_challenge":        {q.Get("code_challenge")},
+				"code_challenge_method": {q.Get("code_challenge_method")},
+			}.Encode()
+			http.Redirect(w, r, consentURL, http.StatusFound)
 		case errors.Is(err, auth.ErrNoScopeGranted):
 			writeOAuthError(w, http.StatusForbidden, "invalid_scope", err.Error(), nil)
 		default:
@@ -268,11 +277,6 @@ func (h AuthorizeHandler) ConsentRequest(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
-}
-
-func redirectToLogin(w http.ResponseWriter, r *http.Request) {
-	loginURL := "/login?return_to=" + url.QueryEscape(r.URL.RequestURI())
-	http.Redirect(w, r, loginURL, http.StatusFound)
 }
 
 func parseScopeParam(raw string) []string {

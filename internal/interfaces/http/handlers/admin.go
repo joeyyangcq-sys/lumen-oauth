@@ -73,3 +73,55 @@ func (h AdminHandler) BindRole(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
+
+func (h AdminHandler) UnbindRole(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
+		return
+	}
+	var req struct {
+		Subject  string `json:"subject"`
+		RoleName string `json:"role_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid json body", nil)
+		return
+	}
+	req.Subject = strings.TrimSpace(req.Subject)
+	req.RoleName = strings.TrimSpace(req.RoleName)
+	if req.Subject == "" || req.RoleName == "" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "subject and role_name are required", nil)
+		return
+	}
+	if err := h.RBAC.UnbindRoleFromSubject(r.Context(), req.Subject, req.RoleName); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (h AdminHandler) DeleteRole(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required", nil)
+		return
+	}
+	var req struct {
+		RoleName string `json:"role_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid json body", nil)
+		return
+	}
+	req.RoleName = strings.TrimSpace(req.RoleName)
+	if req.RoleName == "" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "role_name is required", nil)
+		return
+	}
+	if err := h.RBAC.DeleteRole(r.Context(), req.RoleName); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}

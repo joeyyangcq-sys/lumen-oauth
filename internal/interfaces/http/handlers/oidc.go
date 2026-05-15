@@ -61,5 +61,5 @@ func (h OIDCHandler) scopesSupported() []string {
 	if len(h.Config.OAuth.SupportedScopes) > 0 {
 		return h.Config.OAuth.SupportedScopes
 	}
-	return []string{"openid", "profile", "email", "mcp:tools", "mcp:read", "mcp:write", "offline_access"}
+	return []string{"openid", "profile", "email", "mcp:tools", "read", "gateway:write", "oauth:write", "offline_access"}
 }

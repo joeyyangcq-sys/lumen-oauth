@@ -38,6 +38,26 @@ func (s Service) BindRoleToSubject(ctx context.Context, subject, roleName string
 	return s.Roles.BindRoleToSubject(ctx, subject, roleName)
 }
 
+func (s Service) UnbindRoleFromSubject(ctx context.Context, subject, roleName string) error {
+	subject = strings.TrimSpace(subject)
+	roleName = strings.TrimSpace(roleName)
+	if subject == "" {
+		return ErrInvalidSubject
+	}
+	if roleName == "" {
+		return ErrInvalidRoleName
+	}
+	return s.Roles.UnbindRoleFromSubject(ctx, subject, roleName)
+}
+
+func (s Service) DeleteRole(ctx context.Context, roleName string) error {
+	roleName = strings.TrimSpace(roleName)
+	if roleName == "" {
+		return ErrInvalidRoleName
+	}
+	return s.Roles.DeleteRole(ctx, roleName)
+}
+
 func (s Service) ListRoles(ctx context.Context) ([]role.Role, error) {
 	return s.Roles.ListRoles(ctx)
 }

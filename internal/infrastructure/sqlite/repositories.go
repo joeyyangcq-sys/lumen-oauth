@@ -24,6 +24,7 @@ import (
 	"github.com/joey/lumen-oauth/internal/domain/role"
 	"github.com/joey/lumen-oauth/internal/domain/session"
 	"github.com/joey/lumen-oauth/internal/domain/user"
+	"github.com/joey/lumen-oauth/internal/domain/verification"
 )
 
 var (
@@ -205,6 +206,16 @@ func (r Repositories) initSchema(ctx context.Context) error {
 			expires_at TIMESTAMP NOT NULL,
 			used_at TIMESTAMP NULL,
 			revoked_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS email_verifications (
+			id TEXT PRIMARY KEY,
+			email TEXT NOT NULL,
+			code TEXT NOT NULL,
+			password_hash TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			expires_at TIMESTAMP NOT NULL,
+			verified_at TIMESTAMP NULL,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE IF NOT EXISTS oauth_audit_log (
@@ -945,6 +956,41 @@ func (r Repositories) BindRoleToSubject(ctx context.Context, subject, roleName s
 	return err
 }
 
+func (r Repositories) UnbindRoleFromSubject(ctx context.Context, subject, roleName string) error {
+	subject = strings.TrimSpace(subject)
+	roleName = strings.TrimSpace(roleName)
+	if subject == "" || roleName == "" {
+		return errors.New("subject and role name are required")
+	}
+	_, err := r.exec(ctx, `DELETE FROM subject_roles WHERE subject = ? AND role_name = ?`, subject, roleName)
+	return err
+}
+
+func (r Repositories) DeleteRole(ctx context.Context, roleName string) error {
+	roleName = strings.TrimSpace(roleName)
+	if roleName == "" {
+		return errors.New("role name cannot be empty")
+	}
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var bindCount int
+	row := tx.QueryRowContext(ctx, r.rebind(`SELECT COUNT(1) FROM subject_roles WHERE role_name = ?`), roleName)
+	if err := row.Scan(&bindCount); err != nil {
+		return err
+	}
+	if bindCount > 0 {
+		return errors.New("role is still bound to subjects")
+	}
+	if _, err := r.execTx(ctx, tx, `DELETE FROM role_scopes WHERE role_name = ?`, roleName); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (r Repositories) Create(ctx context.Context, in invite.Invitation) error {
 	_, err := r.exec(ctx, `
 		INSERT INTO invitations (code, email, role_name, expires_at, used_at, revoked_at)
@@ -1015,6 +1061,63 @@ func (r Repositories) Record(ctx context.Context, event ports.AuditEvent) error 
 		event.Timestamp.UTC(),
 	)
 	return err
+}
+
+func (r Repositories) SaveEmailVerification(ctx context.Context, v verification.EmailVerification, passwordHash, name string) error {
+	_, err := r.exec(ctx, `
+		INSERT INTO email_verifications (id, email, code, password_hash, name, expires_at, verified_at)
+		VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+		v.ID,
+		v.Email,
+		v.Code,
+		passwordHash,
+		name,
+		v.ExpiresAt.UTC(),
+	)
+	return err
+}
+
+func (r Repositories) GetPendingByEmailAndCode(ctx context.Context, email, code string) (verification.EmailVerification, string, string, error) {
+	row := r.queryRow(ctx, `
+		SELECT id, email, code, password_hash, name, expires_at, verified_at, created_at
+		FROM email_verifications
+		WHERE lower(email) = lower(?) AND code = ? AND verified_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT 1`, email, code)
+	var (
+		v            verification.EmailVerification
+		passwordHash string
+		name         string
+		expiresAt    time.Time
+		verifiedAt   sql.NullTime
+		createdAt    time.Time
+	)
+	if err := row.Scan(&v.ID, &v.Email, &v.Code, &passwordHash, &name, &expiresAt, &verifiedAt, &createdAt); err != nil {
+		return verification.EmailVerification{}, "", "", err
+	}
+	v.ExpiresAt = expiresAt.UTC()
+	v.CreatedAt = createdAt.UTC()
+	if verifiedAt.Valid {
+		t := verifiedAt.Time.UTC()
+		v.VerifiedAt = &t
+	}
+	return v, passwordHash, name, nil
+}
+
+func (r Repositories) MarkEmailVerified(ctx context.Context, id string, at time.Time) error {
+	_, err := r.exec(ctx, `UPDATE email_verifications SET verified_at = ? WHERE id = ? AND verified_at IS NULL`, at.UTC(), id)
+	return err
+}
+
+func (r Repositories) CountPendingVerifications(ctx context.Context, email string) (int, error) {
+	row := r.queryRow(ctx, `
+		SELECT COUNT(*) FROM email_verifications
+		WHERE lower(email) = lower(?) AND verified_at IS NULL AND expires_at > CURRENT_TIMESTAMP`, email)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func hashSecretSHA256(secret string) string {

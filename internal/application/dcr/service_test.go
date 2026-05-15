@@ -105,3 +105,37 @@ func TestRegisterClient_RejectsUnsafeRedirect(t *testing.T) {
 		t.Fatalf("err=%v want ErrInvalidClient", err)
 	}
 }
+
+func TestRegisterClient_DefaultsScopesWhenNotProvided(t *testing.T) {
+	repo := &fakeClientRepo{}
+	svc := Service{
+		Clients: repo,
+		Redirects: redirect.Validator{Config: redirect.Config{
+			LoopbackEnabled: true,
+			LoopbackPaths:   []string{"/callback"},
+		}},
+		IDGen:             &fakeID{values: []string{"client", "reg"}},
+		Clock:             fakeClock{now: time.Unix(1760000000, 0).UTC()},
+		Enabled:           true,
+		Mode:              "guarded",
+		SupportedScopes:   []string{"mcp:tools", "read"},
+		DefaultTrustLevel: "unknown_dcr",
+	}
+
+	out, err := svc.RegisterClient(context.Background(), "", client.OAuthClient{
+		Name:                    "No Scope Client",
+		RedirectURIs:            []string{"http://localhost:3118/callback"},
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none",
+	})
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+	if out.Scope == "" {
+		t.Fatal("expected default scopes, got empty scope")
+	}
+	if len(repo.saved.Scopes) == 0 {
+		t.Fatal("expected saved client scopes to be populated")
+	}
+}

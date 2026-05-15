@@ -62,6 +62,14 @@ func (f fakeRoleRepo) BindRoleToSubject(context.Context, string, string) error {
 	return nil
 }
 
+func (f fakeRoleRepo) UnbindRoleFromSubject(context.Context, string, string) error {
+	return nil
+}
+
+func (f fakeRoleRepo) DeleteRole(context.Context, string) error {
+	return nil
+}
+
 type fakeClientRepo struct {
 	clients map[string]client.OAuthClient
 }
@@ -98,7 +106,7 @@ func TestIssueClientCredentials_UsesRequestedScopesWhenRBACMissing(t *testing.T)
 	if got.Value == "" {
 		t.Fatal("token value should not be empty")
 	}
-	wantScopes := []string{"routes:read", "routes:write"}
+	wantScopes := []string{"gateway:write", "read"}
 	if len(got.Scopes) != len(wantScopes) || got.Scopes[0] != wantScopes[0] || got.Scopes[1] != wantScopes[1] {
 		t.Fatalf("scopes = %#v, want %#v", got.Scopes, wantScopes)
 	}
@@ -126,8 +134,8 @@ func TestIssueClientCredentials_IntersectScopesWithRBAC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueClientCredentials() error = %v", err)
 	}
-	if len(got.Scopes) != 1 || got.Scopes[0] != "routes:read" {
-		t.Fatalf("scopes = %#v, want [routes:read]", got.Scopes)
+	if len(got.Scopes) != 1 || got.Scopes[0] != "read" {
+		t.Fatalf("scopes = %#v, want [read]", got.Scopes)
 	}
 }
 

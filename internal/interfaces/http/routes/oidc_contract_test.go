@@ -17,7 +17,7 @@ import (
 
 func TestOIDCDiscoveryContract(t *testing.T) {
 	cfg := testConfig("http://127.0.0.1:9080")
-	h := New(cfg, logging.New("error", "json"), nil, auth.Service{}, dcr.Service{}, inviteuc.Service{}, rbac.Service{})
+	h := New(cfg, logging.New("error", "json"), nil, auth.Service{}, dcr.Service{}, inviteuc.Service{}, rbac.Service{}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
 	rec := httptest.NewRecorder()
@@ -44,7 +44,7 @@ func TestOIDCDiscoveryContract(t *testing.T) {
 
 func TestOAuthAuthorizationServerMetadataContract(t *testing.T) {
 	cfg := testConfig("http://127.0.0.1:9080")
-	h := New(cfg, logging.New("error", "json"), nil, auth.Service{}, dcr.Service{}, inviteuc.Service{}, rbac.Service{})
+	h := New(cfg, logging.New("error", "json"), nil, auth.Service{}, dcr.Service{}, inviteuc.Service{}, rbac.Service{}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	rec := httptest.NewRecorder()
@@ -69,7 +69,7 @@ func TestOAuthAuthorizationServerMetadataContract(t *testing.T) {
 
 func TestJWKSContract(t *testing.T) {
 	cfg := testConfig("http://127.0.0.1:9080")
-	h := New(cfg, logging.New("error", "json"), nil, auth.Service{}, dcr.Service{}, inviteuc.Service{}, rbac.Service{})
+	h := New(cfg, logging.New("error", "json"), nil, auth.Service{}, dcr.Service{}, inviteuc.Service{}, rbac.Service{}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	rec := httptest.NewRecorder()
