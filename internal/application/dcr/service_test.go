@@ -139,3 +139,41 @@ func TestRegisterClient_DefaultsScopesWhenNotProvided(t *testing.T) {
 		t.Fatal("expected saved client scopes to be populated")
 	}
 }
+
+func TestRegisterClient_ValidatesIATWithBearerPrefix(t *testing.T) {
+	repo := &fakeClientRepo{}
+	svc := Service{
+		Clients: repo,
+		Enabled: true,
+		Mode:    "iat_required",
+		InitialAccessTokens: []string{
+			"local-dev-iat",
+		},
+	}
+
+	_, err := svc.RegisterClient(context.Background(), "Bearer local-dev-iat", client.OAuthClient{
+		Name:       "Machine Client",
+		GrantTypes: []string{"client_credentials"},
+	})
+	if err != nil {
+		t.Fatalf("RegisterClient() error = %v", err)
+	}
+}
+
+func TestRegisterClient_RejectsInvalidIAT(t *testing.T) {
+	repo := &fakeClientRepo{}
+	svc := Service{
+		Clients:             repo,
+		Enabled:             true,
+		Mode:                "iat_required",
+		InitialAccessTokens: []string{"local-dev-iat"},
+	}
+
+	_, err := svc.RegisterClient(context.Background(), "Bearer wrong", client.OAuthClient{
+		Name:       "Machine Client",
+		GrantTypes: []string{"client_credentials"},
+	})
+	if err != ErrUnauthorizedIAT {
+		t.Fatalf("err=%v want ErrUnauthorizedIAT", err)
+	}
+}

@@ -36,6 +36,8 @@ type LoggingConfig struct {
 type ObservabilityConfig struct {
 	MetricsEnabled bool   `yaml:"metrics_enabled"`
 	MetricsPath    string `yaml:"metrics_path"`
+	PProfEnabled   bool   `yaml:"pprof_enabled"`
+	PProfPath      string `yaml:"pprof_path"`
 }
 
 type OAuthConfig struct {
@@ -127,6 +129,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Observability.MetricsPath == "" {
 		c.Observability.MetricsPath = "/metrics"
+	}
+	if c.Observability.PProfPath == "" {
+		c.Observability.PProfPath = "/debug/pprof"
 	}
 	if c.Auth.PasswordHash.Algorithm == "" {
 		c.Auth.PasswordHash.Algorithm = "pbkdf2-sha256"

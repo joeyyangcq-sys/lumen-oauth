@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+
+	"github.com/joey/lumen-oauth/internal/platform/logging"
 )
 
 type requestIDKey struct{}
@@ -16,15 +18,17 @@ func RequestID(next http.Handler) http.Handler {
 			id = newRequestID()
 		}
 		ctx := context.WithValue(r.Context(), requestIDKey{}, id)
-		ctx = context.WithValue(ctx, "trace_id", id)
+		ctx = logging.ContextWithTraceID(ctx, id)
 		w.Header().Set("X-Request-Id", id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
 func TraceID(ctx context.Context) string {
-	v, _ := ctx.Value(requestIDKey{}).(string)
-	return v
+	if v, _ := ctx.Value(requestIDKey{}).(string); v != "" {
+		return v
+	}
+	return logging.TraceID(ctx)
 }
 
 func newRequestID() string {

@@ -445,10 +445,10 @@ func (r Repositories) GetByID(ctx context.Context, clientID string) (client.OAut
 		ID:                      id,
 		Name:                    name,
 		ClientSecretSHA256:      secretHash,
-		RedirectURIs:            splitCommaList(redirectURIs),
-		GrantTypes:              splitCommaList(grantTypes),
-		ResponseTypes:           splitCommaList(responseTypes),
-		Scopes:                  splitCommaList(scopes),
+		RedirectURIs:            splitStringList(redirectURIs),
+		GrantTypes:              splitStringList(grantTypes),
+		ResponseTypes:           splitStringList(responseTypes),
+		Scopes:                  splitStringList(scopes),
 		TokenEndpointAuthMethod: tokenEndpointAuthMethod,
 		TrustLevel:              trustLevel,
 		ClientIDIssuedAt:        clientIDIssuedAt,
@@ -487,10 +487,10 @@ func (r Repositories) Save(ctx context.Context, in client.OAuthClient) error {
 		in.ID,
 		in.Name,
 		in.ClientSecretSHA256,
-		strings.Join(in.RedirectURIs, ","),
-		strings.Join(in.GrantTypes, ","),
-		strings.Join(in.ResponseTypes, ","),
-		strings.Join(in.Scopes, ","),
+		mustMarshalStringList(in.RedirectURIs),
+		mustMarshalStringList(in.GrantTypes),
+		mustMarshalStringList(in.ResponseTypes),
+		mustMarshalStringList(in.Scopes),
 		defaultString(in.TokenEndpointAuthMethod, "client_secret_post"),
 		defaultString(in.TrustLevel, "unknown_dcr"),
 		in.ClientIDIssuedAt,
@@ -560,6 +560,40 @@ func (r Repositories) SaveUser(ctx context.Context, in user.User) error {
 		return errors.New("user password hash cannot be empty")
 	}
 	_, err := r.exec(ctx, `
+		INSERT INTO users (
+			id, email, name, password_hash, is_admin, disabled, force_change_password, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			email = excluded.email,
+			name = excluded.name,
+			password_hash = excluded.password_hash,
+			is_admin = excluded.is_admin,
+			disabled = excluded.disabled,
+			force_change_password = excluded.force_change_password,
+			updated_at = CURRENT_TIMESTAMP`,
+		in.ID,
+		strings.TrimSpace(strings.ToLower(in.Email)),
+		in.Name,
+		in.PasswordHash,
+		boolToInt(in.IsAdmin),
+		boolToInt(in.Disabled),
+		boolToInt(in.ForceChangePassword),
+	)
+	return err
+}
+
+func (r Repositories) saveUserTx(ctx context.Context, tx *sql.Tx, in user.User) error {
+	if strings.TrimSpace(in.ID) == "" {
+		return errors.New("user id cannot be empty")
+	}
+	if strings.TrimSpace(in.Email) == "" {
+		return errors.New("user email cannot be empty")
+	}
+	if strings.TrimSpace(in.PasswordHash) == "" {
+		return errors.New("user password hash cannot be empty")
+	}
+	_, err := r.execTx(ctx, tx, `
 		INSERT INTO users (
 			id, email, name, password_hash, is_admin, disabled, force_change_password, updated_at
 		)
@@ -663,6 +697,32 @@ func (r Repositories) MarkAuthorizationCodeUsed(ctx context.Context, codeHash st
 	return nil
 }
 
+func (r Repositories) MarkAuthorizationCodeUsedAndSaveRefreshToken(ctx context.Context, codeHash string, usedAt time.Time, refresh *refreshtoken.RefreshToken) error {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := r.execTx(ctx, tx, `UPDATE oauth_authorization_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL`, usedAt.UTC(), codeHash)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	if refresh != nil {
+		if err := r.saveRefreshTokenTx(ctx, tx, *refresh); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (r Repositories) UpsertGrant(ctx context.Context, in grant.Grant) error {
 	_, err := r.exec(ctx, `
 		INSERT INTO oauth_grants (id, user_id, client_id, resource, scope, revoked_at)
@@ -708,6 +768,26 @@ func (r Repositories) GetActiveGrant(ctx context.Context, userID, clientID, reso
 
 func (r Repositories) SaveRefreshToken(ctx context.Context, token refreshtoken.RefreshToken) error {
 	_, err := r.exec(ctx, `
+		INSERT INTO oauth_refresh_tokens (
+			id, token_hash, grant_id, client_id, user_id, resource, scope,
+			expires_at, used_at, revoked_at, replaced_by_id
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+		token.ID,
+		token.TokenHash,
+		token.GrantID,
+		token.ClientID,
+		token.UserID,
+		token.Resource,
+		strings.Join(token.Scopes, " "),
+		token.ExpiresAt.UTC(),
+		token.ReplacedByID,
+	)
+	return err
+}
+
+func (r Repositories) saveRefreshTokenTx(ctx context.Context, tx *sql.Tx, token refreshtoken.RefreshToken) error {
+	_, err := r.execTx(ctx, tx, `
 		INSERT INTO oauth_refresh_tokens (
 			id, token_hash, grant_id, client_id, user_id, resource, scope,
 			expires_at, used_at, revoked_at, replaced_by_id
@@ -1109,6 +1189,30 @@ func (r Repositories) MarkEmailVerified(ctx context.Context, id string, at time.
 	return err
 }
 
+func (r Repositories) MarkEmailVerifiedAndSaveUser(ctx context.Context, verificationID string, at time.Time, in user.User) error {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := r.execTx(ctx, tx, `UPDATE email_verifications SET verified_at = ? WHERE id = ? AND verified_at IS NULL`, at.UTC(), verificationID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	if err := r.saveUserTx(ctx, tx, in); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (r Repositories) CountPendingVerifications(ctx context.Context, email string) (int, error) {
 	row := r.queryRow(ctx, `
 		SELECT COUNT(*) FROM email_verifications
@@ -1125,10 +1229,16 @@ func hashSecretSHA256(secret string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func splitCommaList(raw string) []string {
+func splitStringList(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var values []string
+		if err := json.Unmarshal([]byte(raw), &values); err == nil {
+			return dedupeSorted(values)
+		}
 	}
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))
@@ -1140,6 +1250,18 @@ func splitCommaList(raw string) []string {
 		out = append(out, p)
 	}
 	return dedupeSorted(out)
+}
+
+func mustMarshalStringList(values []string) string {
+	values = dedupeSorted(values)
+	if len(values) == 0 {
+		return "[]"
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 func mapRoleScopes(roleScopes map[string][]string) []role.Role {

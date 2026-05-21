@@ -311,8 +311,26 @@ bootstrap_admin:
 | 2 | CORS | 可配置来源，支持 credentials，暴露 X-Request-Id |
 | 3 | RequestID | 16 字符 hex ID，传播 X-Request-Id |
 | 4 | Recovery | panic 恢复，记录堆栈，返回 500 |
-| 5 | AccessLog | JSON 格式请求日志 |
-| 6 | Metrics | HTTP 状态码 + 延迟指标 |
+| 5 | AccessLog | JSON/TEXT 结构化请求日志，包含 method、route、status_class、duration_ms、bytes、request_id |
+| 6 | Metrics | expvar HTTP 总量、错误、延迟与低基数 route 维度指标 |
+
+### 6.1 可观测性端点
+
+| 配置 | 默认值 | 行为 |
+|------|--------|------|
+| `observability.metrics_enabled` | `true` | 开启 expvar 指标 |
+| `observability.metrics_path` | `/metrics` | 指标端点；开启后同时保留 `/debug/vars` 兼容端点 |
+| `observability.pprof_enabled` | `false` | 显式开启 pprof 诊断端点 |
+| `observability.pprof_path` | `/debug/pprof` | pprof base path |
+
+expvar 指标包含：
+
+- `oauth_http_requests_total`
+- `oauth_http_errors_total`
+- `oauth_http_latency_ms_total`
+- `oauth_http_routes`：按 `method`、ServeMux `route` pattern、`status_class` 聚合，未知路径统一记录为 `unmatched`，避免把用户输入或完整 URL 作为高基数标签。
+
+pprof 默认关闭；只在受信任网络或受保护入口后开启。
 
 ---
 

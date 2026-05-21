@@ -17,6 +17,12 @@ func TestStorageDefaultsToPostgres(t *testing.T) {
 	if cfg.Storage.PostgresURL == "" {
 		t.Fatalf("postgres url should default for local development")
 	}
+	if cfg.Observability.MetricsPath != "/metrics" {
+		t.Fatalf("metrics path=%q, want /metrics", cfg.Observability.MetricsPath)
+	}
+	if cfg.Observability.PProfPath != "/debug/pprof" {
+		t.Fatalf("pprof path=%q, want /debug/pprof", cfg.Observability.PProfPath)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate defaults: %v", err)
 	}

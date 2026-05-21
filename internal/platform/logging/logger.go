@@ -11,6 +11,20 @@ type Logger struct {
 	slog *slog.Logger
 }
 
+type traceIDKey struct{}
+
+func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceIDKey{}, traceID)
+}
+
+func TraceID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	traceID, _ := ctx.Value(traceIDKey{}).(string)
+	return traceID
+}
+
 func New(level, format string) *Logger {
 	var h slog.Handler
 	opts := &slog.HandlerOptions{Level: parseLevel(level)}
@@ -26,6 +40,10 @@ func (l *Logger) Info(msg string, args ...any) {
 	l.slog.Info(msg, args...)
 }
 
+func (l *Logger) Warn(msg string, args ...any) {
+	l.slog.Warn(msg, args...)
+}
+
 func (l *Logger) Error(msg string, args ...any) {
 	l.slog.Error(msg, args...)
 }
@@ -39,10 +57,7 @@ func (l *Logger) With(args ...any) *Logger {
 }
 
 func (l *Logger) WithContext(ctx context.Context) *Logger {
-	if ctx == nil {
-		return l
-	}
-	traceID, _ := ctx.Value("trace_id").(string)
+	traceID := TraceID(ctx)
 	if traceID == "" {
 		return l
 	}
