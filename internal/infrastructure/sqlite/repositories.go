@@ -1253,6 +1253,7 @@ func splitStringList(raw string) []string {
 }
 
 func mustMarshalStringList(values []string) string {
+	values = append([]string(nil), values...)
 	values = dedupeSorted(values)
 	if len(values) == 0 {
 		return "[]"

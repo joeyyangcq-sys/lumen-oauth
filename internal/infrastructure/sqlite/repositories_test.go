@@ -36,16 +36,29 @@ func TestStringListRoundTripSupportsCommaInValues(t *testing.T) {
 		"https://example.com/callback?prompt=a,b",
 		"http://localhost:3118/callback",
 	}
+	wantInput := append([]string(nil), values...)
 
 	encoded := mustMarshalStringList(values)
 	got := splitStringList(encoded)
 
-	if len(got) != len(values) {
-		t.Fatalf("len=%d, want %d: %#v", len(got), len(values), got)
+	if len(values) != len(wantInput) {
+		t.Fatalf("input len=%d, want %d", len(values), len(wantInput))
 	}
-	for i := range values {
-		if got[i] != values[i] {
-			t.Fatalf("got[%d]=%q, want %q; encoded=%s", i, got[i], values[i], encoded)
+	for i := range wantInput {
+		if values[i] != wantInput[i] {
+			t.Fatalf("input mutated at %d: got %q, want %q", i, values[i], wantInput[i])
+		}
+	}
+	want := []string{
+		"http://localhost:3118/callback",
+		"https://example.com/callback?prompt=a,b",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len=%d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d]=%q, want %q; encoded=%s", i, got[i], want[i], encoded)
 		}
 	}
 }

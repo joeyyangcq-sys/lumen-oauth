@@ -48,3 +48,41 @@ func TestStorageAllowsSQLiteForTests(t *testing.T) {
 		t.Fatalf("validate sqlite config: %v", err)
 	}
 }
+
+func TestObservabilityPathValidationRejectsRouteCollisions(t *testing.T) {
+	cfg := Config{
+		OAuth: OAuthConfig{
+			Issuer:     "http://127.0.0.1:9080",
+			SigningKey: "test-signing-key",
+		},
+		Observability: ObservabilityConfig{
+			MetricsEnabled: true,
+			MetricsPath:    "/healthz",
+			PProfPath:      "/debug/pprof",
+		},
+	}
+	cfg.ApplyDefaults()
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected metrics path collision error, got nil")
+	}
+}
+
+func TestObservabilityPathValidationRequiresAbsolutePath(t *testing.T) {
+	cfg := Config{
+		OAuth: OAuthConfig{
+			Issuer:     "http://127.0.0.1:9080",
+			SigningKey: "test-signing-key",
+		},
+		Observability: ObservabilityConfig{
+			MetricsPath: "metrics",
+			PProfPath:   "/debug/pprof",
+		},
+	}
+	cfg.ApplyDefaults()
+	cfg.Observability.MetricsPath = "metrics"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected relative metrics path error, got nil")
+	}
+}
