@@ -1,0 +1,75 @@
+server:
+  http_listen: ":9080"
+  read_timeout: 10s
+  write_timeout: 10s
+  cors_allowed_origins:
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+logging:
+  level: info
+  format: json
+
+observability:
+  metrics_enabled: true
+  metrics_path: /metrics
+
+oauth:
+  issuer: http://localhost:9080
+  audience:
+    - lumen-mcp
+    - http://localhost:9280/mcp
+  signing_key: docker-dev-signing-key
+  access_token_ttl: 15m
+  refresh_token_ttl: 720h
+  authorization_code_ttl: 5m
+  supported_scopes:
+    - openid
+    - profile
+    - email
+    - mcp:tools
+    - read
+    - gateway:write
+    - oauth:write
+    - admin
+    - offline_access
+
+auth:
+  password_hash:
+    algorithm: pbkdf2-sha256
+
+bootstrap_admin:
+  enabled: true
+  email: admin@example.com
+  password: admin
+  name: Default Admin
+  force_change_password: false
+
+dcr:
+  enabled: true
+  mode: guarded
+  iat_required: false
+  initial_access_tokens:
+    - local-dev-iat
+  default_trust_level: unknown_dcr
+  unknown_client_allowed_scopes:
+    - mcp:tools
+    - read
+    - gateway:write
+    - oauth:write
+    - offline_access
+  allowed_redirects:
+    loopback_enabled: true
+    loopback_paths:
+      - /callback
+    custom_schemes:
+      - cursor://anysphere.cursor-mcp/oauth/callback
+    hosted_https:
+      - https://claude.ai/api/mcp/auth_callback
+
+invite:
+  ttl: 24h
+
+storage:
+  driver: sqlite
+  sqlite_path: /app/data/oauth.db

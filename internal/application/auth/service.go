@@ -567,24 +567,6 @@ func (s Service) Refresh(ctx context.Context, cmd RefreshTokenCommand) (OAuthTok
 	return result, nil
 }
 
-func (s Service) issueForGrant(ctx context.Context, grant grant.Grant, now time.Time) (OAuthTokenResult, error) {
-	result, err := s.issueAccessForGrant(ctx, grant, now)
-	if err != nil {
-		return OAuthTokenResult{}, err
-	}
-	if contains(grant.Scopes, "offline_access") && s.Refreshes != nil {
-		raw, refresh, err := s.newRefreshToken(grant, now)
-		if err != nil {
-			return OAuthTokenResult{}, err
-		}
-		if err := s.Refreshes.SaveRefreshToken(ctx, refresh); err != nil {
-			return OAuthTokenResult{}, err
-		}
-		result.RefreshToken = raw
-	}
-	return result, nil
-}
-
 func (s Service) issueAccessForGrant(ctx context.Context, grant grant.Grant, now time.Time) (OAuthTokenResult, error) {
 	jti := ""
 	if s.IDGen != nil {

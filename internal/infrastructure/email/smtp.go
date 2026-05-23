@@ -51,7 +51,7 @@ func (s SMTPSender) SendVerificationCode(ctx context.Context, to, code string) e
 		}
 	}()
 	defer close(done)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	} else {
@@ -62,7 +62,7 @@ func (s SMTPSender) SendVerificationCode(ctx context.Context, to, code string) e
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if ok, _ := client.Extension("STARTTLS"); ok {
 		if err := client.StartTLS(&tls.Config{ServerName: s.Host, MinVersion: tls.VersionTLS12}); err != nil {
 			return err

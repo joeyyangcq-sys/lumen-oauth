@@ -168,10 +168,7 @@ func (s Service) validateRedirectURIs(ctx context.Context, in []string) ([]strin
 
 func (s Service) dcrEnabled() bool {
 	mode := strings.TrimSpace(s.Mode)
-	if mode == "disabled" {
-		return false
-	}
-	return true
+	return mode != "disabled"
 }
 
 func (s Service) requiresIAT() bool {

@@ -81,7 +81,7 @@ func TestMarkEmailVerifiedAndSaveUserIsAtomicOnUserFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer repos.Close()
+	defer func() { _ = repos.Close() }()
 
 	now := time.Unix(1710000000, 0).UTC()
 	if err := repos.SaveUser(t.Context(), user.User{
@@ -125,7 +125,7 @@ func TestMarkEmailVerifiedAndSaveUserRejectsAlreadyVerified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	defer repos.Close()
+	defer func() { _ = repos.Close() }()
 
 	now := time.Unix(1710000000, 0).UTC()
 	v := verification.EmailVerification{

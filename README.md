@@ -1,4 +1,27 @@
-# Lumen OAuth 技术方案
+# Lumen OAuth
+
+[![Go Version](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](go.mod)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+Lumen OAuth is a production-grade, zero-dependency OAuth 2.0 / OpenID Connect (OIDC) identity and authorization server written entirely in Go (based strictly on the `net/http` standard library).
+
+Developed by **Joey Yang** (Senior Backend & Gateway Engineer) as part of the **[Lumen Ecosystem](https://github.com/joeyyangcq-sys/lumen)** to provide secure, microservice-level federated identity and access management.
+
+---
+
+## 1. Project Overview & Resume Alignments
+
+### 1.1 Core Positions
+- **Zero Web Framework Overhead**: Leverages standard library HTTP routing and middlewares, achieving minimum footprint, fast startups, and absolute safety.
+- **Enterprise-Grade Identity Protections**: Implements complete authorization schemes with PKCE and Refresh Token Rotation to prevent session hijacking and replay attacks.
+- **RFC 7591 Dynamic Client Registration (DCR)**: Automates OAuth client onboard processes, essential for AI agents or external MCP clients.
+
+### 1.2 Resume Technical Feats
+- **Timing Attack Mitigation**: Employs `subtle.ConstantTimeCompare` across all password comparisons, signature checks, CSRF validations, and token hashes.
+- **Advanced RTR & Replay Detection**: Implements token lineage tracing. If any reused refresh token is presented, the entire associated Grant is atomically revoked, mitigating token theft instantly.
+- **NIST-Compliant Passwords**: Utilizes PBKDF2-SHA256 password hashing running **210,000 iterations**, ensuring high entropy and safety against brute-force attacks.
+
+---
 
 ## 1. 项目背景与目标
 
@@ -35,47 +58,51 @@ Lumen OAuth 是一个纯 Go 实现的 OAuth 2.0 / OpenID Connect 授权服务器
 
 ```mermaid
 sequenceDiagram
-    participant Client as MCP Client / 浏览器
-    participant OAuth as Lumen OAuth
-    participant DB as PostgreSQL / SQLite
+    autonumber
+    participant Client as Client (Browser / Agent)
+    participant OAuth as Lumen OAuth Server
+    participant DB as SQLite / PostgreSQL Database
     
-    Client->>OAuth: GET /oauth/authorize<br/>response_type=code&code_challenge=...&scope=...
-    OAuth->>OAuth: 校验 client_id、redirect_uri
-    OAuth->>DB: 查询 Grant (user_id, client_id, resource)
+    Client->>OAuth: GET /oauth/authorize (client_id, challenge, scope)
+    OAuth->>OAuth: Validate client_id & redirect_uri
+    OAuth->>DB: Query existing Grant (user_id, client_id)
     
-    alt 无已有授权
-        OAuth-->>Client: 302 → /consent?...
-        Client->>OAuth: 浏览器打开 /login
+    alt No Active Grant (User authentication required)
+        OAuth-->>Client: 302 Redirect to /login
         Client->>OAuth: POST /auth/login (email, password)
-        OAuth->>DB: 验证密码 (PBKDF2-SHA256)
+        OAuth->>DB: Verify credentials (PBKDF2-SHA256)
         OAuth-->>Client: Set-Cookie: lumen_session
-        Client->>OAuth: POST /oauth/consent (X-CSRF-Token)
-        OAuth->>DB: 创建 Grant
+        Client->>OAuth: POST /oauth/consent (approve scopes)
+        OAuth->>DB: Create user consent Grant record
     end
     
-    OAuth->>DB: 创建 AuthorizationCode (code_hash)
-    OAuth-->>Client: 302 → redirect_uri?code=...&state=...
+    OAuth->>DB: Insert Authorization Code (hashed)
+    OAuth-->>Client: 302 Redirect to redirect_uri?code=XYZ
     
-    Client->>OAuth: POST /oauth/token<br/>grant_type=authorization_code&code_verifier=...
-    OAuth->>OAuth: 验证 PKCE: SHA256(verifier) == challenge
-    OAuth->>DB: 标记 code 已使用
-    OAuth->>OAuth: 签发 JWT (HS256)
-    OAuth-->>Client: { access_token, refresh_token }
+    Client->>OAuth: POST /oauth/token (code, code_verifier)
+    OAuth->>OAuth: Verify PKCE challenge: SHA256(verifier) == challenge
+    OAuth->>DB: Mark authorization code as used
+    OAuth->>OAuth: Generate HS256 JWT Access Token & Refresh Token
+    OAuth-->>Client: JSON Response { access_token, refresh_token, expires_in }
 ```
 
 ### 2.2 刷新令牌轮换与重用检测
 
 ```mermaid
-graph TB
-    subgraph 正常轮换
-        RT1["Refresh Token A"] -->|兑换| NEW["签发新 Access Token"]
-        RT1 -->|标记 UsedAt| USED["Token A 已使用"]
-        NEW --> RT2["Refresh Token B<br/>(ReplacedByID = A)"]
+graph TD
+    subgraph RTRFlow ["Normal Refresh Token Rotation (RTR)"]
+        RT_A["Refresh Token A"] -->|1. Exchange| Ex["POST /oauth/token"]
+        Ex -->|2. Issue| RT_B["New Refresh Token B<br/>(ReplacedByID = A)"]
+        Ex -->|3. Issue| AT["New Access Token"]
+        RT_A -->|4. Revoke| RT_A_Used["Mark Token A as Used"]
     end
     
-    subgraph 重用检测
-        RT1_STOLEN["Token A (被盗)"] -->|重放| DETECT["检测到已使用"]
-        DETECT -->|撤销| GRANT["撤销整个 Grant<br/>所有令牌失效"]
+    subgraph ReplayDetection ["Token Reuse / Theft Detection"]
+        RT_A_Stolen["Refresh Token A<br/>(Stolen Copy)"] -->|5. Malicious Replay| Ex_Stolen["POST /oauth/token"]
+        Ex_Stolen -->|6. Detect Replay| Detect{"Is Token A Used?"}
+        Detect -->|Yes - Alarm!| RevokeGrant["Revoke Entire Grant & Family"]
+        RevokeGrant -->|7. Invalidate| RT_B_Invalid["Token B Revoked"]
+        RevokeGrant -->|7. Invalidate| ActiveTokens["All Active Tokens Revoked"]
     end
 ```
 

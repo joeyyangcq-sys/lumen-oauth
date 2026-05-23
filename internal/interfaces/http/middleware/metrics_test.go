@@ -16,7 +16,7 @@ func TestMetricsUsesRoutePatternAndStatusClass(t *testing.T) {
 	})
 	handler := Metrics(metrics)(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -42,7 +42,7 @@ func TestMetricsUsesUnmatchedForUnknownRoutes(t *testing.T) {
 	metrics := observability.NewHTTPMetrics()
 	handler := Metrics(metrics)(http.NewServeMux())
 
-	req := httptest.NewRequest(http.MethodGet, "/users/12345/private", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/users/12345/private", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

@@ -54,7 +54,7 @@ func openAndInit(driver, sqlDriver, dataSource string) (Repositories, error) {
 	if err != nil {
 		return Repositories{}, err
 	}
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		return Repositories{}, err
 	}
@@ -300,7 +300,7 @@ func (r Repositories) tableColumns(ctx context.Context, table string) (map[strin
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		out := make(map[string]bool)
 		for rows.Next() {
@@ -319,7 +319,7 @@ func (r Repositories) tableColumns(ctx context.Context, table string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make(map[string]bool)
 	for rows.Next() {
@@ -955,7 +955,7 @@ func (r Repositories) ListForSubject(ctx context.Context, subject string) ([]rol
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	roleScopes := make(map[string][]string)
 	for rows.Next() {

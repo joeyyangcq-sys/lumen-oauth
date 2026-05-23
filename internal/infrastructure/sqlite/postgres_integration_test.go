@@ -15,7 +15,7 @@ func TestPostgresOpenAndSeedIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
 	}
-	defer repos.Close()
+	defer func() { _ = repos.Close() }()
 
 	client, err := repos.GetByID(t.Context(), "local-dev-client")
 	if err != nil {
