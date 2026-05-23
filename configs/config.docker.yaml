@@ -3,8 +3,8 @@ server:
   read_timeout: 10s
   write_timeout: 10s
   cors_allowed_origins:
-    - http://127.0.0.1:5173
     - http://localhost:5173
+    - http://127.0.0.1:5173
 
 logging:
   level: info
@@ -13,14 +13,13 @@ logging:
 observability:
   metrics_enabled: true
   metrics_path: /metrics
-  pprof_enabled: false
-  pprof_path: /debug/pprof
 
 oauth:
-  issuer: http://127.0.0.1:9080
+  issuer: http://localhost:9080
   audience:
     - lumen-mcp
-  signing_key: change-me
+    - http://localhost:9280/mcp
+  signing_key: docker-dev-signing-key
   access_token_ttl: 15m
   refresh_token_ttl: 720h
   authorization_code_ttl: 5m
@@ -32,6 +31,7 @@ oauth:
     - read
     - gateway:write
     - oauth:write
+    - admin
     - offline_access
 
 auth:
@@ -43,7 +43,7 @@ bootstrap_admin:
   email: admin@example.com
   password: admin
   name: Default Admin
-  force_change_password: true
+  force_change_password: false
 
 dcr:
   enabled: true
@@ -71,6 +71,5 @@ invite:
   ttl: 24h
 
 storage:
-  driver: postgres
-  postgres_url: postgres://lumen_oauth:lumen_oauth@127.0.0.1:5432/lumen_oauth?sslmode=disable
-  sqlite_path: ./data/oauth.db
+  driver: sqlite
+  sqlite_path: /app/data/oauth.db

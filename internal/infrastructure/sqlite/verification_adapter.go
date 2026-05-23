@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/joey/lumen-oauth/internal/domain/user"
 	"github.com/joey/lumen-oauth/internal/domain/verification"
 )
 
@@ -21,6 +22,10 @@ func (a VerificationAdapter) GetPendingByEmailAndCode(ctx context.Context, email
 
 func (a VerificationAdapter) MarkVerified(ctx context.Context, id string, at time.Time) error {
 	return a.Repos.MarkEmailVerified(ctx, id, at)
+}
+
+func (a VerificationAdapter) MarkVerifiedAndSaveUser(ctx context.Context, verificationID string, at time.Time, in user.User) error {
+	return a.Repos.MarkEmailVerifiedAndSaveUser(ctx, verificationID, at, in)
 }
 
 func (a VerificationAdapter) CountPending(ctx context.Context, email string) (int, error) {

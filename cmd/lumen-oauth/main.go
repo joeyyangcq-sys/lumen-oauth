@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"os/signal"
 	"syscall"
@@ -24,7 +25,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := app.Run(ctx); err != nil && err != context.Canceled {
+	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		panic(err)
 	}
 }

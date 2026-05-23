@@ -61,6 +61,7 @@ type AuthorizationCodeRepository interface {
 	SaveAuthorizationCode(ctx context.Context, code authcode.AuthorizationCode) error
 	GetAuthorizationCodeByHash(ctx context.Context, codeHash string) (authcode.AuthorizationCode, error)
 	MarkAuthorizationCodeUsed(ctx context.Context, codeHash string, usedAt time.Time) error
+	MarkAuthorizationCodeUsedAndSaveRefreshToken(ctx context.Context, codeHash string, usedAt time.Time, refresh *refreshtoken.RefreshToken) error
 }
 
 type GrantRepository interface {
@@ -100,6 +101,7 @@ type EmailVerificationRepository interface {
 	Save(ctx context.Context, v verification.EmailVerification, passwordHash, name string) error
 	GetPendingByEmailAndCode(ctx context.Context, email, code string) (verification.EmailVerification, string, string, error)
 	MarkVerified(ctx context.Context, id string, at time.Time) error
+	MarkVerifiedAndSaveUser(ctx context.Context, verificationID string, at time.Time, in user.User) error
 	CountPending(ctx context.Context, email string) (int, error)
 }
 

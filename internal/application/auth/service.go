@@ -502,14 +502,27 @@ func (s Service) ExchangeAuthorizationCode(ctx context.Context, cmd Authorizatio
 	if !verifyPKCES256(cmd.CodeVerifier, stored.CodeChallenge) {
 		return OAuthTokenResult{}, ErrPKCEVerificationFailed
 	}
-	if err := s.AuthCodes.MarkAuthorizationCodeUsed(ctx, codeHash, now); err != nil {
-		return OAuthTokenResult{}, ErrInvalidAuthorizationCode
-	}
 	grant, err := s.Grants.GetActiveGrant(ctx, stored.UserID, stored.ClientID, stored.Resource)
 	if err != nil {
 		return OAuthTokenResult{}, ErrInvalidAuthorizationCode
 	}
-	return s.issueForGrant(ctx, grant, now)
+	result, err := s.issueAccessForGrant(ctx, grant, now)
+	if err != nil {
+		return OAuthTokenResult{}, err
+	}
+	var refresh *refreshtoken.RefreshToken
+	if contains(grant.Scopes, "offline_access") && s.Refreshes != nil {
+		raw, next, err := s.newRefreshToken(grant, now)
+		if err != nil {
+			return OAuthTokenResult{}, err
+		}
+		result.RefreshToken = raw
+		refresh = &next
+	}
+	if err := s.AuthCodes.MarkAuthorizationCodeUsedAndSaveRefreshToken(ctx, codeHash, now, refresh); err != nil {
+		return OAuthTokenResult{}, ErrInvalidAuthorizationCode
+	}
+	return result, nil
 }
 
 func (s Service) Refresh(ctx context.Context, cmd RefreshTokenCommand) (OAuthTokenResult, error) {
@@ -551,24 +564,6 @@ func (s Service) Refresh(ctx context.Context, cmd RefreshTokenCommand) (OAuthTok
 		return OAuthTokenResult{}, ErrInvalidRefreshToken
 	}
 	result.RefreshToken = nextRaw
-	return result, nil
-}
-
-func (s Service) issueForGrant(ctx context.Context, grant grant.Grant, now time.Time) (OAuthTokenResult, error) {
-	result, err := s.issueAccessForGrant(ctx, grant, now)
-	if err != nil {
-		return OAuthTokenResult{}, err
-	}
-	if contains(grant.Scopes, "offline_access") && s.Refreshes != nil {
-		raw, refresh, err := s.newRefreshToken(grant, now)
-		if err != nil {
-			return OAuthTokenResult{}, err
-		}
-		if err := s.Refreshes.SaveRefreshToken(ctx, refresh); err != nil {
-			return OAuthTokenResult{}, err
-		}
-		result.RefreshToken = raw
-	}
 	return result, nil
 }
 

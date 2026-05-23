@@ -154,7 +154,7 @@ func TestIssueClientCredentials_ReturnsErrNoScopeGranted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if err != ErrNoScopeGranted {
+	if !errors.Is(err, ErrNoScopeGranted) {
 		t.Fatalf("err = %v, want ErrNoScopeGranted", err)
 	}
 }
@@ -173,7 +173,7 @@ func TestIssueClientCredentials_InvalidSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if err != ErrInvalidClientCredentials {
+	if !errors.Is(err, ErrInvalidClientCredentials) {
 		t.Fatalf("err = %v, want ErrInvalidClientCredentials", err)
 	}
 }

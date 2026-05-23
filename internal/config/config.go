@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,8 @@ type LoggingConfig struct {
 type ObservabilityConfig struct {
 	MetricsEnabled bool   `yaml:"metrics_enabled"`
 	MetricsPath    string `yaml:"metrics_path"`
+	PProfEnabled   bool   `yaml:"pprof_enabled"`
+	PProfPath      string `yaml:"pprof_path"`
 }
 
 type OAuthConfig struct {
@@ -127,6 +130,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Observability.MetricsPath == "" {
 		c.Observability.MetricsPath = "/metrics"
+	}
+	if c.Observability.PProfPath == "" {
+		c.Observability.PProfPath = "/debug/pprof"
 	}
 	if c.Auth.PasswordHash.Algorithm == "" {
 		c.Auth.PasswordHash.Algorithm = "pbkdf2-sha256"
@@ -248,6 +254,48 @@ func (c Config) Validate() error {
 		}
 	default:
 		return fmt.Errorf("unsupported storage.driver: %q", c.Storage.Driver)
+	}
+	if err := validateObservabilityPath(c.Observability.MetricsPath, "observability.metrics_path"); err != nil {
+		return err
+	}
+	if err := validateObservabilityPath(c.Observability.PProfPath, "observability.pprof_path"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateObservabilityPath(raw, field string) error {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return fmt.Errorf("%s cannot be empty", field)
+	}
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("%s must start with /", field)
+	}
+	switch path {
+	case "/healthz",
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/openid-configuration",
+		"/.well-known/jwks.json",
+		"/oauth/jwks.json",
+		"/oauth/token",
+		"/oauth/authorize",
+		"/oauth/consent",
+		"/oauth/consent/request",
+		"/oauth/register",
+		"/connect/register",
+		"/auth/login",
+		"/auth/logout",
+		"/auth/me",
+		"/auth/invitations",
+		"/auth/register/accept",
+		"/auth/register",
+		"/auth/verify-email",
+		"/admin/roles",
+		"/admin/roles/delete",
+		"/admin/role-bindings",
+		"/admin/role-bindings/unbind":
+		return fmt.Errorf("%s conflicts with application route %s", field, path)
 	}
 	return nil
 }

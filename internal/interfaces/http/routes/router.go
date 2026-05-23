@@ -3,6 +3,8 @@ package routes
 import (
 	"expvar"
 	"net/http"
+	"net/http/pprof"
+	"strings"
 
 	"github.com/joey/lumen-oauth/internal/application/auth"
 	"github.com/joey/lumen-oauth/internal/application/dcr"
@@ -67,7 +69,16 @@ func New(
 	mux.HandleFunc("/admin/roles/delete", adminHandler.DeleteRole)
 	mux.HandleFunc("/admin/role-bindings", adminHandler.BindRole)
 	mux.HandleFunc("/admin/role-bindings/unbind", adminHandler.UnbindRole)
-	mux.Handle("/debug/vars", expvar.Handler())
+	if cfg.Observability.MetricsEnabled {
+		metricsPath := cleanPath(cfg.Observability.MetricsPath, "/metrics")
+		mux.Handle(metricsPath, expvar.Handler())
+		if metricsPath != "/debug/vars" {
+			mux.Handle("/debug/vars", expvar.Handler())
+		}
+	}
+	if cfg.Observability.PProfEnabled {
+		registerPProf(mux, cleanPath(cfg.Observability.PProfPath, "/debug/pprof"))
+	}
 
 	mws := []middleware.Middleware{
 		middleware.SecurityHeaders,
@@ -82,6 +93,32 @@ func New(
 		mws = append(mws, middleware.Metrics(metrics))
 	}
 	return middleware.Chain(mux, mws...)
+}
+
+func cleanPath(path, fallback string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fallback
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func registerPProf(mux *http.ServeMux, base string) {
+	base = strings.TrimRight(base, "/")
+	mux.HandleFunc(base+"/", pprof.Index)
+	mux.HandleFunc(base+"/cmdline", pprof.Cmdline)
+	mux.HandleFunc(base+"/profile", pprof.Profile)
+	mux.HandleFunc(base+"/symbol", pprof.Symbol)
+	mux.HandleFunc(base+"/trace", pprof.Trace)
+	mux.Handle(base+"/allocs", pprof.Handler("allocs"))
+	mux.Handle(base+"/block", pprof.Handler("block"))
+	mux.Handle(base+"/goroutine", pprof.Handler("goroutine"))
+	mux.Handle(base+"/heap", pprof.Handler("heap"))
+	mux.Handle(base+"/mutex", pprof.Handler("mutex"))
+	mux.Handle(base+"/threadcreate", pprof.Handler("threadcreate"))
 }
 
 func methodSwitch(getHandler, postHandler http.HandlerFunc) http.HandlerFunc {

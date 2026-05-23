@@ -3,6 +3,7 @@ package dcr
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"slices"
@@ -167,10 +168,7 @@ func (s Service) validateRedirectURIs(ctx context.Context, in []string) ([]strin
 
 func (s Service) dcrEnabled() bool {
 	mode := strings.TrimSpace(s.Mode)
-	if mode == "disabled" {
-		return false
-	}
-	return true
+	return mode != "disabled"
 }
 
 func (s Service) requiresIAT() bool {
@@ -189,8 +187,14 @@ func (s Service) validIAT(in string) bool {
 	if in == "" {
 		return false
 	}
+	inHash := sha256.Sum256([]byte(in))
 	for _, candidate := range s.InitialAccessTokens {
-		if strings.TrimSpace(candidate) == in {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		candidateHash := sha256.Sum256([]byte(candidate))
+		if subtle.ConstantTimeCompare(inHash[:], candidateHash[:]) == 1 {
 			return true
 		}
 	}

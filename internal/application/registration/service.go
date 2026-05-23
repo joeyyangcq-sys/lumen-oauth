@@ -15,12 +15,12 @@ import (
 )
 
 var (
-	ErrInvalidEmail        = errors.New("invalid email address")
-	ErrInvalidPassword     = errors.New("password must be at least 8 characters")
-	ErrEmailAlreadyExists  = errors.New("email already registered")
-	ErrInvalidCode         = errors.New("invalid or expired verification code")
-	ErrAlreadyVerified     = errors.New("email already verified")
-	ErrTooManyAttempts     = errors.New("too many verification attempts, please request a new code")
+	ErrInvalidEmail       = errors.New("invalid email address")
+	ErrInvalidPassword    = errors.New("password must be at least 8 characters")
+	ErrEmailAlreadyExists = errors.New("email already registered")
+	ErrInvalidCode        = errors.New("invalid or expired verification code")
+	ErrAlreadyVerified    = errors.New("email already verified")
+	ErrTooManyAttempts    = errors.New("too many verification attempts, please request a new code")
 )
 
 const (
@@ -114,11 +114,7 @@ func (s Service) VerifyEmail(ctx context.Context, email, code string) error {
 		return err
 	}
 
-	if err := s.Verifications.MarkVerified(ctx, v.ID, now); err != nil {
-		return err
-	}
-
-	return s.Users.SaveUser(ctx, user.User{
+	return s.Verifications.MarkVerifiedAndSaveUser(ctx, v.ID, now, user.User{
 		ID:           "usr-" + s.IDGen.New(),
 		Email:        email,
 		Name:         name,

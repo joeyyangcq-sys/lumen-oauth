@@ -11,9 +11,9 @@ func Metrics(m *observability.HTTPMetrics) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			rec := newResponseRecorder(w)
 			next.ServeHTTP(rec, r)
-			m.Observe(rec.status, time.Since(start))
+			m.Observe(r.Method, routePattern(r), rec.status, time.Since(start))
 		})
 	}
 }

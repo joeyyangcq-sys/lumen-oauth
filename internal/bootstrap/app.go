@@ -100,15 +100,6 @@ func New(cfg config.Config) (*App, error) {
 	var regSvc *registration.Service
 	if cfg.Registration.Enabled {
 		var emailSender email.ConsoleSender
-		if cfg.SMTP.Host != "" {
-			_ = email.SMTPSender{
-				Host:     cfg.SMTP.Host,
-				Port:     cfg.SMTP.Port,
-				Username: cfg.SMTP.Username,
-				Password: cfg.SMTP.Password,
-				From:     cfg.SMTP.From,
-			}
-		}
 		svc := registration.Service{
 			Users:         repos,
 			Verifications: sqlite.VerificationAdapter{Repos: repos},

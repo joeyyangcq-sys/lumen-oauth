@@ -205,8 +205,22 @@ func TestDCRIATInviteAndRBACContract(t *testing.T) {
 	}
 }
 
-func newTestHandler(t *testing.T) (http.Handler, func()) {
+type testHandlerConfig struct {
+	MetricsEnabled bool
+	MetricsPath    string
+	PProfEnabled   bool
+	PProfPath      string
+}
+
+func newTestHandler(t *testing.T, opts ...func(*testHandlerConfig)) (http.Handler, func()) {
 	t.Helper()
+	testCfg := testHandlerConfig{
+		MetricsPath: "/metrics",
+		PProfPath:   "/debug/pprof",
+	}
+	for _, opt := range opts {
+		opt(&testCfg)
+	}
 	cfg := config.Config{
 		Server: config.ServerConfig{
 			HTTPListen:   ":0",
@@ -215,8 +229,10 @@ func newTestHandler(t *testing.T) (http.Handler, func()) {
 		},
 		Logging: config.LoggingConfig{Level: "error", Format: "json"},
 		Observability: config.ObservabilityConfig{
-			MetricsEnabled: false,
-			MetricsPath:    "/metrics",
+			MetricsEnabled: testCfg.MetricsEnabled,
+			MetricsPath:    testCfg.MetricsPath,
+			PProfEnabled:   testCfg.PProfEnabled,
+			PProfPath:      testCfg.PProfPath,
 		},
 		OAuth: config.OAuthConfig{
 			Issuer:         "http://127.0.0.1:9080",

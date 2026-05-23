@@ -13,7 +13,7 @@ func TestCORSAllowsCredentialedConfiguredOrigins(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodOptions, "/auth/logout", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/auth/logout", nil)
 	req.Header.Set("Origin", "http://admin.example.test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -39,7 +39,7 @@ func TestCORSDoesNotReflectUnknownOrigins(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/auth/me", nil)
 	req.Header.Set("Origin", "http://evil.example.test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
